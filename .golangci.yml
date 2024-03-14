@@ -430,6 +430,7 @@ linters-settings:
         disabled: false
         arguments:
           - "fmt.Printf"
+          - "fmt.Println"
           - "fmt.Fprintf"
           - "fmt.Fprint"
           - "fmt.Fprintln"

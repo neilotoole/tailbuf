@@ -14,9 +14,7 @@ import "context"
 // nominal buffer is the complete list of items written to Buf via the
 // [Buf.Write] or [Buf.WriteAll] methods. However, Buf drops the oldest items as
 // it fills (which is the entire point of this package): the tail window is the
-// subset of the nominal buffer that is currently available. Some of Buf's
-// methods take arguments that are indices into the nominal buffer, for example
-// [SliceNominal].
+// subset of the nominal buffer that is currently available.
 type Buf[T any] struct {
 	// zero is the zero value of T, used for zeroing elements of the in-use
 	// window so that after operations like Buf.DropBack we don't accidentally
@@ -157,7 +155,7 @@ func (b *Buf[T]) InBounds(i int) bool {
 		return false
 	}
 	start, end := b.Bounds()
-	return i >= start && i <= end // TODO: should be < end?
+	return i >= start && i < end
 }
 
 // Bounds returns the start and end indices of the tail window vs the nominal
@@ -167,9 +165,9 @@ func (b *Buf[T]) Bounds() (start, end int) {
 	return b.Offset(), b.Written()
 }
 
-// Capacity returns the capacity of Buf, which is the fixed size specified when
+// Cap returns the capacity of Buf, which is the fixed size specified when
 // the buffer was created.
-func (b *Buf[T]) Capacity() int {
+func (b *Buf[T]) Cap() int {
 	return len(b.window)
 }
 
@@ -245,8 +243,8 @@ func (b *Buf[T]) Front() T {
 // PopFront removes and returns the newest item in the tail window.
 func (b *Buf[T]) PopFront() T {
 	if b.front == -1 {
-		var t T
-		return t
+		var zero T
+		return zero
 	}
 
 	item := b.window[b.front]
@@ -289,6 +287,7 @@ func (b *Buf[T]) DropBack() {
 }
 
 // DropBackN removes the oldest n items from the tail, zeroing out the items.
+// If n >= [Buf.Len], all items in the tail window are removed.
 func (b *Buf[T]) DropBackN(n int) {
 	if b.len == 0 || n < 1 {
 		return
@@ -315,12 +314,26 @@ func (b *Buf[T]) DropBackN(n int) {
 	}
 }
 
+// Peek returns the nth item in the tail window. Peek panics if n is not a valid
+// index, or if the buffer is empty.
+func (b *Buf[T]) Peek(n int) T {
+	if b.len == 0 || n < 0 || n >= b.len {
+		panic("tailbuf: Peek out of bounds")
+	}
+
+	if b.front > b.back {
+		return b.window[(b.back+n)%len(b.window)]
+	}
+
+	return b.window[(b.back+n)%len(b.window)]
+}
+
 // PopBack removes and returns the oldest item in the tail window. If the buffer
 // is empty, the zero value of T is returned.
 func (b *Buf[T]) PopBack() T {
 	if b.back == -1 {
-		var t T
-		return t
+		var zero T
+		return zero
 	}
 
 	item := b.window[b.back]
@@ -410,8 +423,9 @@ func (b *Buf[T]) PopFrontN(n int) []T {
 	return s
 }
 
-// Apply applies fn to each item in the tail window, in oldest-to-newest order.
-// If Buf is empty, fn is not invoked. The buffer is returned for chaining.
+// Apply applies fn to each item in the tail window, in oldest-to-newest order,
+// mutating the items in place. If Buf is empty, fn is not invoked. The buffer
+// is returned for chaining.
 //
 //	buf := tailbuf.New[string](3)
 //	buf.WriteAll("a", "b  ", "   c  ")
@@ -421,6 +435,9 @@ func (b *Buf[T]) PopFrontN(n int) []T {
 //
 // Using Apply is cheaper than getting the slice via [Buf.Tail] and applying fn
 // manually, as it avoids the possible allocation of a new slice by Buf.Tail.
+//
+// The behavior of Apply is undefined if the buffer is modified during
+// execution.
 //
 // For more control, or to handle errors, use [Buf.Do].
 func (b *Buf[T]) Apply(fn func(item T) T) *Buf[T] {
@@ -453,18 +470,24 @@ func (b *Buf[T]) Apply(fn func(item T) T) *Buf[T] {
 //
 // If Buf is empty, fn is not invoked.
 //
-// The index arg to fn is the index of the item in the tail window. You can use
-// the offset arg to compute the index of the item in the nominal buffer.
+// The index arg to fn is the index of the item in the tail window. The
+// tailOffset arg is the offset of the first item in the tail window vs the
+// nominal buffer. That is to say, it's the value of [Buf.Offset].
+// You can use these values to calculate the nominal index of the item:
 //
-//	nominalIndex := index + offset
+//	nominalIndex := index + tailOffset
 //
-// REVISIT: Should index be the tailIndex instead?
+// The context is not checked for cancellation between invocations of fn. If you
+// need to check for cancellation, do so inside fn.
 //
-// The context is not checked for cancellation between iterations. The context
-// should be checked in fn if desired.
-func (b *Buf[T]) Do(ctx context.Context, fn func(ctx context.Context, item T, index, offset int) (T, error)) error {
+// The behavior of Do is undefined if the buffer is modified during execution.
+func (b *Buf[T]) Do(ctx context.Context, fn func(ctx context.Context, item T, index, tailOffset int) (T, error)) error {
 	if b.len == 0 {
 		return nil
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	var v T
@@ -500,8 +523,8 @@ func (b *Buf[T]) Do(ctx context.Context, fn func(ctx context.Context, item T, in
 	return nil
 }
 
-// SliceNominal returns a slice into the nominal buffer, using the standard
-// [inclusive:exclusive] slicing mechanics.
+// SliceNominal is a convenience function that returns a fresh slice into the
+// nominal buffer, using the standard [inclusive:exclusive] slicing mechanics.
 //
 // Boundary checking is relaxed. If the buffer is empty, the returned slice is
 // empty. Otherwise, if the requested range is completely outside the bounds of
@@ -510,9 +533,9 @@ func (b *Buf[T]) Do(ctx context.Context, fn func(ctx context.Context, item T, in
 // boundary checking is important to you, use [Buf.InBounds] to check the start
 // and end indices.
 //
-// SliceNominal is approximately functionality equivalent to reslicing the
-// result of [Buf.Tail], but it may avoid wasteful copying (and has relaxed
-// bounds checking).
+// SliceNominal is approximately functionally equivalent to reslicing the result
+// of [Buf.Tail], but it may avoid wasteful copying (and has relaxed bounds
+// checking).
 //
 //	buf := tailbuf.New[int](3).WriteAll(1, 2, 3)
 //	a := buf.Tail()[0:2]

@@ -1,6 +1,7 @@
 package tailbuf_test
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -9,6 +10,23 @@ import (
 
 	"github.com/neilotoole/tailbuf"
 )
+
+func ExampleBuf() {
+	buf := tailbuf.New[string](3)
+
+	buf.WriteAll("a", "b", "c")
+	fmt.Println(buf.Tail())
+
+	buf.WriteAll("d", "e", "f", "g")
+	fmt.Println(buf.Tail())
+
+	fmt.Println("Written:", buf.Written())
+
+	// Output:
+	// [a b c]
+	// [e f g]
+	// Written: 7
+}
 
 func TestTail(t *testing.T) {
 	buf := tailbuf.New[rune](3)
@@ -124,15 +142,29 @@ func TestBounds(t *testing.T) {
 	require.Equal(t, 0, start)
 	require.Equal(t, 0, end)
 
+	require.False(t, buf.InBounds(-1))
+	require.False(t, buf.InBounds(0))
+	require.False(t, buf.InBounds(1))
+
 	buf.WriteAll("a", "b", "c")
 	start, end = buf.Bounds()
 	require.Equal(t, 0, start)
 	require.Equal(t, 3, end)
+	require.True(t, buf.InBounds(0))
+	require.True(t, buf.InBounds(1))
+	require.True(t, buf.InBounds(2))
+	require.False(t, buf.InBounds(3))
 
 	buf.WriteAll("d", "e")
 	start, end = buf.Bounds()
 	require.Equal(t, 2, start)
 	require.Equal(t, 5, end)
+	require.False(t, buf.InBounds(0))
+	require.False(t, buf.InBounds(1))
+	for i := 2; i < 5; i++ {
+		require.True(t, buf.InBounds(i))
+	}
+	require.False(t, buf.InBounds(5))
 }
 
 func TestSlice(t *testing.T) {
@@ -179,12 +211,44 @@ func TestSlice(t *testing.T) {
 	require.Equal(t, []int{6}, s)
 }
 
-func TestApply(t *testing.T) {
+func TestApply_Do(t *testing.T) {
 	buf := tailbuf.New[string](3)
 	buf.WriteAll("In", "Xanadu  ", "   did", "Kubla  ", "Khan")
 	buf.Apply(strings.ToUpper).Apply(strings.TrimSpace)
 	got := buf.Tail()
 	require.Equal(t, []string{"DID", "KUBLA", "KHAN"}, got)
+
+	err := buf.Do(context.Background(), func(_ context.Context, item string, _, _ int) (string, error) {
+		return strings.ToLower(item), nil
+	})
+	require.NoError(t, err)
+	got = buf.Tail()
+	require.Equal(t, []string{"did", "kubla", "khan"}, got)
+}
+
+func TestPeek(t *testing.T) {
+	buf := tailbuf.New[int](3)
+
+	require.Panics(t, func() {
+		_ = buf.Peek(0) // panics on empty buffer
+	})
+
+	buf.WriteAll(0, 1, 2)
+
+	got := buf.Peek(0)
+	require.Equal(t, 0, got)
+	got = buf.Peek(1)
+	require.Equal(t, 1, got)
+	got = buf.Peek(2)
+	require.Equal(t, 2, got)
+
+	require.Panics(t, func() {
+		_ = buf.Peek(-1)
+	})
+
+	require.Panics(t, func() {
+		_ = buf.Peek(3)
+	})
 }
 
 func TestTailSlice(t *testing.T) {
@@ -206,7 +270,7 @@ func TestTail_Slice_Equivalence(t *testing.T) {
 func TestWrittenGTCapacity(t *testing.T) {
 	buf := tailbuf.New[string](1)
 	buf.WriteAll("a", "b")
-	require.Equal(t, 1, buf.Capacity())
+	require.Equal(t, 1, buf.Cap())
 	require.Equal(t, 2, buf.Written())
 	tail := buf.Tail()
 	require.Equal(t, []string{"b"}, tail)
@@ -220,7 +284,7 @@ func TestWrittenGTCapacity(t *testing.T) {
 
 func TestZeroCapacity(t *testing.T) {
 	buf := tailbuf.New[rune](0)
-	require.Equal(t, 0, buf.Capacity())
+	require.Equal(t, 0, buf.Cap())
 	require.Equal(t, 0, buf.Written())
 	require.Equal(t, 0, buf.Len())
 	require.Empty(t, buf.Tail())
