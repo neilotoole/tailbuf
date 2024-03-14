@@ -18,6 +18,11 @@ go get github.com/neilotoole/tailbuf
 
 ## Usage
 
+> [!WARNING]  
+> Note that `tailbuf` is still in its `v0.0.x` infancy. There's a few things in
+> the package API that probably need to be dialed in, so expect some churn.
+> [Feedback](https://github.com/neilotoole/tailbuf/issues) is appreciated.
+
 Below we'll create a [`tailbuf.Buf`](https://pkg.go.dev/github.com/neilotoole/tailbuf#Buf)
 of type `string` with a capacity of `3`. You write to the buffer using [`buf.Write`](https://pkg.go.dev/github.com/neilotoole/tailbuf#Buf.Write)
 or [`buf.WriteAll`](https://pkg.go.dev/github.com/neilotoole/tailbuf#Buf.WriteAll), and
