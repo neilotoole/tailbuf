@@ -44,6 +44,44 @@ func ExampleBuf_Peek() {
 	// [c]
 }
 
+func ExampleBuf_Len() {
+	buf := tailbuf.New[string](3)
+
+	fmt.Println(buf.Cap())
+	fmt.Println(buf.Len())
+	buf.WriteAll("a", "b", "c")
+	fmt.Println(buf.Len())
+
+	buf.WriteAll("d", "e", "f", "g")
+	fmt.Println(buf.Len())
+
+	fmt.Println("Written:", buf.Written())
+	buf.Reset()
+	fmt.Println(buf.Len())
+	fmt.Println("Written:", buf.Written())
+
+	buf.WriteAll("h", "i")
+	fmt.Println(buf.Len())
+	fmt.Println("Written:", buf.Written())
+
+	buf.Clear() // Clear is like Reset, but doesn't reset the written counter
+	fmt.Println(buf.Len())
+	fmt.Println("Written:", buf.Written())
+
+	// Output:
+	// 3
+	// 0
+	// 3
+	// 3
+	// Written: 7
+	// 0
+	// Written: 0
+	// 2
+	// Written: 2
+	// 0
+	// Written: 2
+}
+
 func ExampleBuf_Apply() {
 	buf := tailbuf.New[string](3)
 	buf.WriteAll("In", "Xanadu  ", "   did", "Kubla  ", "Khan")

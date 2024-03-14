@@ -40,10 +40,10 @@ func main() {
     buf := tailbuf.New[string](3)
 
     buf.WriteAll("a", "b", "c")
-    fmt.Println(buf.Tail()) 	// [a b c]
+    fmt.Println(buf.Tail())   // [a b c]
 
     buf.WriteAll("d", "e", "f", "g")
-    fmt.Println(buf.Tail()) 	// [e f g]
+    fmt.Println(buf.Tail())   // [e f g]
 
     fmt.Println("Written:", buf.Written()) // Written: 7
 }
@@ -67,7 +67,35 @@ There are various functions for popping, dropping, or peeking into the tail buff
   fmt.Println(buf.Tail())       // [c]
 ```
 
-There's also the [`Apply`](https://pkg.go.dev/github.com/neilotoole/tailbuf#Buf.Apply) method, which applies a func to each element in the buffer,
+There are also basic methods for interacting with the buffer:
+
+```go
+  buf := tailbuf.New[string](3)
+
+  fmt.Println(buf.Cap())                   // 3
+  fmt.Println(buf.Len())                   // 0
+  buf.WriteAll("a", "b", "c")
+  fmt.Println(buf.Len())                   // 3
+
+  buf.WriteAll("d", "e", "f", "g")
+  fmt.Println(buf.Len())                   // 3
+
+  fmt.Println("Written:", buf.Written())   // 7
+  buf.Reset()                              // Reset the buffer, including "written" count
+  fmt.Println(buf.Len())                   // 0
+  fmt.Println("Written:", buf.Written())   // 0
+
+  buf.WriteAll("h", "i")
+  fmt.Println(buf.Len())                   // 2
+  fmt.Println("Written:", buf.Written())   // 2
+
+  buf.Clear()                              // Clear is like Reset, but doesn't reset "written" count
+  fmt.Println(buf.Len())                   // 0
+  fmt.Println("Written:", buf.Written())   // 2
+```
+
+
+And then there's the [`Apply`](https://pkg.go.dev/github.com/neilotoole/tailbuf#Buf.Apply) method, which applies a func to each element in the buffer,
 and also its bigger brother [`Do`](https://pkg.go.dev/github.com/neilotoole/tailbuf#Buf.Do), which does the same thing, but with context and
 error awareness.
 
@@ -77,5 +105,6 @@ error awareness.
   buf.Apply(strings.ToUpper).Apply(strings.TrimSpace)
   fmt.Println(buf.Tail()) // [DID KUBLA KHAN]
 ```
+
 
 See the [package reference](https://pkg.go.dev/github.com/neilotoole/tailbuf) for more details.
