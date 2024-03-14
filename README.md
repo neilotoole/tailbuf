@@ -48,3 +48,29 @@ Note that `Buf.Tail` returns a slice into the buffer's internal storage, so it's
 only valid until the next write operation. If you need to retain the tail slice,
 you should copy the returned slice, or instead use [`tailbuf.SliceTail`](https://pkg.go.dev/github.com/neilotoole/tailbuf#SliceTail), which
 always returns a freshly-allocated slice.
+
+There are various functions for popping, dropping, or peeking into the tail buffer.
+
+```go
+  buf := tailbuf.New[string](3)
+
+  buf.WriteAll("a", "b", "c")
+  fmt.Println(buf.Peek(0))      // a
+  fmt.Println(buf.Peek(1))      // b
+
+  fmt.Println(buf.PopBackN(2))  // [a b]
+  fmt.Println(buf.Tail())       // [c]
+```
+
+There's also the [`Apply`](https://pkg.go.dev/github.com/neilotoole/tailbuf#Buf.Apply) method, which applies a func to each element in the buffer,
+and also its bigger brother [`Do`](https://pkg.go.dev/github.com/neilotoole/tailbuf#Buf.Do), which does the same thing, but with context and
+error awareness.
+
+```go
+  buf := tailbuf.New[string](3)
+  buf.WriteAll("In", "Xanadu  ", "   did", "Kubla  ", "Khan")
+  buf.Apply(strings.ToUpper).Apply(strings.TrimSpace)
+  fmt.Println(buf.Tail()) // [DID KUBLA KHAN]
+```
+
+See the [package reference](https://pkg.go.dev/github.com/neilotoole/tailbuf) for more details.

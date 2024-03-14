@@ -28,6 +28,32 @@ func ExampleBuf() {
 	// Written: 7
 }
 
+func ExampleBuf_Peek() {
+	buf := tailbuf.New[string](3)
+
+	buf.WriteAll("a", "b", "c")
+	fmt.Println(buf.Peek(0))
+	fmt.Println(buf.Peek(1))
+
+	fmt.Println(buf.PopBackN(2))
+	fmt.Println(buf.Tail())
+	// Output:
+	// a
+	// b
+	// [a b]
+	// [c]
+}
+
+func ExampleBuf_Apply() {
+	buf := tailbuf.New[string](3)
+	buf.WriteAll("In", "Xanadu  ", "   did", "Kubla  ", "Khan")
+	buf.Apply(strings.ToUpper).Apply(strings.TrimSpace)
+	fmt.Println(buf.Tail())
+
+	// Output:
+	// [DID KUBLA KHAN]
+}
+
 func TestTail(t *testing.T) {
 	buf := tailbuf.New[rune](3)
 	gotLen := buf.Len()
