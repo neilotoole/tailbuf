@@ -114,11 +114,23 @@ import "context"
 // The buffer is laid out as a single backing slice (window) used as a ring.
 // "back" is the physical index of the oldest live item; the live items
 // occupy "len" consecutive positions starting at back, modulo capacity.
-// Visually, with cap=5, back=3, len=4:
 //
-//	window: [ x | x | _ | A | B | C | D ]
-//	                      ^back            (live: A,B,C,D in oldest-to-newest)
-//	                                  ^... wraps to the start when len > cap-back
+// Example A — no wrap (cap=5, back=1, len=3):
+//
+//	physical:    0     1     2     3     4
+//	window:    [ _  |  A  |  B  |  C  |  _ ]
+//	                  ^back
+//	                                       (oldest-to-newest: A, B, C)
+//
+// Example B — wrapped (cap=5, back=3, len=4):
+//
+//	physical:    0     1     2     3     4
+//	window:    [ C  |  D  |  _  |  A  |  B ]
+//	                              ^back
+//	                                       (oldest-to-newest: A, B, C, D)
+//
+// In both cases, the i-th live item (oldest-to-newest) sits at physical
+// index (back + i) mod cap.
 //
 // # Invariants
 //
@@ -757,11 +769,20 @@ func (b *Buf[T]) Do(ctx context.Context, fn func(ctx context.Context, item T, in
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Snapshot tailOffset before iterating so the value passed to fn is
+	// genuinely constant for the duration of this call. The contract assumes
+	// fn does not mutate b, but capturing once is cheap and keeps the
+	// argument honest even if a future change to b.offset's update timing
+	// would otherwise be observable mid-iteration.
+	tailOffset := b.offset
 	winLen := len(b.window)
 	for i := 0; i < b.len; i++ {
 		idx := (b.back + i) % winLen
-		v, err := fn(ctx, b.window[idx], i, b.offset)
+		v, err := fn(ctx, b.window[idx], i, tailOffset)
 		if err != nil {
+			// Halt without writing v back. Items at positions [0, i) have
+			// already been replaced; positions [i, Len) are unchanged. This
+			// matches the contract documented above.
 			return err
 		}
 		b.window[idx] = v

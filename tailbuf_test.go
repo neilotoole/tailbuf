@@ -2,6 +2,7 @@ package tailbuf_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -1171,4 +1172,129 @@ func TestDropBack_DropBackN_Equivalence(t *testing.T) {
 		buf2.DropBack()
 	}
 	tailbuf.RequireEqualInternalState(t, buf1, buf2)
+}
+
+// TestDo_NilContext pins the documented behavior that Do substitutes
+// context.Background() for a nil context, rather than panicking when fn
+// later calls ctx.Err(). A future deletion of the nil-check would be
+// caught here.
+func TestDo_NilContext(t *testing.T) {
+	buf := tailbuf.New[int](3).WriteAll(10, 20, 30)
+
+	// Bind nil to a typed variable so the static-analysis check on "nil
+	// Context literal" doesn't fire here; passing a nil Context is exactly
+	// the case under test.
+	var nilCtx context.Context
+	var seenCtxs []context.Context
+	err := buf.Do(nilCtx, func(ctx context.Context, item, _, _ int) (int, error) {
+		seenCtxs = append(seenCtxs, ctx)
+		return item, nil
+	})
+	require.NoError(t, err)
+	require.Len(t, seenCtxs, 3)
+	for i, c := range seenCtxs {
+		require.NotNilf(t, c, "Do must replace nil ctx with a real one (call %d)", i)
+		require.NoErrorf(t, c.Err(), "substituted ctx must not be canceled (call %d)", i)
+	}
+}
+
+// TestDo_ErrorHaltsAndPreservesPartialMutation pins the contract that when
+// fn returns an error at iteration i, items at tail-relative positions
+// [0, i) have been replaced and items at [i, Len) are untouched. The
+// returned error is propagated unchanged.
+//
+// We deliberately drive the buffer into a wrapped state (back > 0, items
+// span the physical end of window) to ensure the partial-mutation accounting
+// is correct under wrap, not just for back=0.
+func TestDo_ErrorHaltsAndPreservesPartialMutation(t *testing.T) {
+	// cap=4, write 6 items: window=[5,6,3,4], back=2, len=4. Tail is [3,4,5,6].
+	buf := tailbuf.New[int](4).WriteAll(1, 2, 3, 4, 5, 6)
+	require.Equal(t, []int{3, 4, 5, 6}, buf.Tail())
+
+	sentinel := errors.New("stop at index 2")
+	err := buf.Do(context.Background(),
+		func(_ context.Context, item, index, _ int) (int, error) {
+			if index == 2 {
+				return 0, sentinel
+			}
+			return item * 100, nil
+		})
+	require.ErrorIs(t, err, sentinel)
+
+	// Indices 0,1 mutated (3->300, 4->400); indices 2,3 untouched (5, 6).
+	require.Equal(t, []int{300, 400, 5, 6}, buf.Tail())
+}
+
+// TestApplyDo_WrappedLen3Plus exercises Apply and Do over a multi-item
+// wrapped tail (cap=4, back=2, len=4). The A1 over-iteration regression
+// class is most likely to re-emerge when wrap produces both a pre-wrap
+// and post-wrap segment, so we want to pin "exactly Len calls in
+// oldest-to-newest order" against this shape specifically.
+func TestApplyDo_WrappedLen3Plus(t *testing.T) {
+	// Both subtests share this initial state:
+	// cap=4, write 6 items: window=[5,6,3,4], back=2, len=4. Tail=[3,4,5,6].
+	const cap = 4
+	all := []int{1, 2, 3, 4, 5, 6}
+	wantTail := []int{3, 4, 5, 6}
+
+	t.Run("Apply_visits_each_live_once_in_order", func(t *testing.T) {
+		buf := tailbuf.New[int](cap).WriteAll(all...)
+		require.Equal(t, wantTail, buf.Tail())
+
+		var seen []int
+		buf.Apply(func(n int) int {
+			seen = append(seen, n)
+			return n * 10
+		})
+		require.Equal(t, wantTail, seen, "Apply must visit live items oldest-to-newest, exactly once each")
+		require.Equal(t, []int{30, 40, 50, 60}, buf.Tail())
+	})
+
+	t.Run("Do_visits_each_live_once_with_correct_indices", func(t *testing.T) {
+		buf := tailbuf.New[int](cap).WriteAll(all...)
+		require.Equal(t, wantTail, buf.Tail())
+
+		var seenItems, seenIndices, seenOffsets []int
+		err := buf.Do(context.Background(),
+			func(_ context.Context, item, index, off int) (int, error) {
+				seenItems = append(seenItems, item)
+				seenIndices = append(seenIndices, index)
+				seenOffsets = append(seenOffsets, off)
+				return item * 10, nil
+			})
+		require.NoError(t, err)
+		require.Equal(t, wantTail, seenItems)
+		require.Equal(t, []int{0, 1, 2, 3}, seenIndices, "index must be tail-relative")
+		require.Equal(t, []int{2, 2, 2, 2}, seenOffsets, "tailOffset must be constant across calls")
+		require.Equal(t, []int{30, 40, 50, 60}, buf.Tail())
+	})
+}
+
+// TestPopFrontWriteReuseNominalIndex_AfterEviction extends
+// TestPopFrontWriteReuseNominalIndex into the post-eviction regime where
+// Offset is non-zero. The original review found that the offset=0 case
+// alone would not catch a regression that special-cased PopFront-then-Write
+// against a non-zero offset.
+func TestPopFrontWriteReuseNominalIndex_AfterEviction(t *testing.T) {
+	buf := tailbuf.New[string](3)
+	buf.WriteAll("a", "b", "c", "d", "e") // tail=[c,d,e], offset=2
+	require.Equal(t, []string{"c", "d", "e"}, buf.Tail())
+	require.Equal(t, 2, buf.Offset())
+	require.Equal(t, "e", buf.Front())
+	require.Equal(t, 4, buf.Offset()+buf.Len()-1) // e at nominal 4
+
+	buf.PopFront() // tail=[c,d], offset still 2, len=2
+	require.Equal(t, []string{"c", "d"}, buf.Tail())
+	require.Equal(t, 2, buf.Offset())
+
+	buf.Write("x") // tail=[c,d,x], offset=2; x at nominal 4 (reuses e's slot)
+	require.Equal(t, []string{"c", "d", "x"}, buf.Tail())
+	require.Equal(t, "x", buf.Front())
+	require.Equal(t, 2, buf.Offset(), "Write after PopFront must not advance offset")
+	require.Equal(t, 4, buf.Offset()+buf.Len()-1, "x reuses the popped item's nominal index")
+
+	start, end := buf.Bounds()
+	require.Equal(t, 2, start)
+	require.Equal(t, 5, end)
+	require.Equal(t, 6, buf.Written(), "Written counts every Write, including post-pop reuse")
 }
