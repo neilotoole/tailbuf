@@ -217,9 +217,14 @@ func New[T any](capacity int) *Buf[T] {
 // See also: [Buf.WriteAll] for batch appends.
 func (b *Buf[T]) Write(item T) *Buf[T] {
 	if len(b.window) == 0 {
-		// Capacity 0: the item is dropped on the floor, but Written still
-		// reflects that the user attempted a write.
+		// Capacity 0: every write is conceptually an eviction-on-write
+		// (no room, so the item leaves the tail immediately). Advancing
+		// both written and offset keeps the invariant
+		// Offset()+Len() == Written() holding when no PopFront has run;
+		// without this, a cap=0 buffer would silently break that
+		// equality after the first Write.
 		b.written++
+		b.offset++
 		return b
 	}
 	b.write(item)
@@ -234,7 +239,10 @@ func (b *Buf[T]) Write(item T) *Buf[T] {
 // tail (the earlier writes are immediately evicted as later writes arrive).
 func (b *Buf[T]) WriteAll(items ...T) *Buf[T] {
 	if len(b.window) == 0 {
+		// See [Buf.Write] for why offset moves in lockstep with written in
+		// the zero-capacity case.
 		b.written += len(items)
+		b.offset += len(items)
 		return b
 	}
 	for i := range items {
