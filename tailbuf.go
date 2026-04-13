@@ -723,10 +723,16 @@ func (b *Buf[T]) DropBackN(n int) {
 // oldest-to-newest order. fn is invoked exactly [Buf.Len] times. Returns b
 // for chaining.
 //
-// Apply is cheaper than the equivalent loop over [Buf.Tail] (which may
-// allocate when the live items wrap). It is the natural choice for in-place
-// transforms that don't need an index, an early exit, or an error result;
-// for those, use [Buf.Do].
+// Apply iterates in place without allocating, and handles wrap
+// transparently. Compared to a hand-rolled loop over [Buf.Tail]: Apply
+// skips the allocation that [Buf.Tail] must do when the live items wrap,
+// so Apply is meaningfully faster in that case. When the items do not
+// wrap, a direct loop over [Buf.Tail] can be a few cycles per item
+// faster than Apply because the compiler inlines the loop body and
+// avoids modular indexing; see the package benchmarks for concrete
+// numbers. Apply is the natural choice when you want correctness under
+// wrap without having to think about it, and when you don't need an
+// index, an early exit, or an error result — for those, use [Buf.Do].
 //
 // Behavior is undefined if fn modifies b (whether by writing, popping, or
 // otherwise).
