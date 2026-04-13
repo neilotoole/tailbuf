@@ -92,6 +92,173 @@ func ExampleBuf_Apply() {
 	// [DID KUBLA KHAN]
 }
 
+// ExampleBuf_Bounds shows how Bounds tracks the live nominal range as items
+// are evicted by writes and removed by pops.
+func ExampleBuf_Bounds() {
+	buf := tailbuf.New[string](3)
+	buf.WriteAll("a", "b", "c")
+	start, end := buf.Bounds()
+	fmt.Printf("after 3 writes:    bounds=(%d,%d) tail=%v\n", start, end, buf.Tail())
+
+	buf.WriteAll("d", "e") // evicts "a", "b"
+	start, end = buf.Bounds()
+	fmt.Printf("after 2 evictions: bounds=(%d,%d) tail=%v\n", start, end, buf.Tail())
+
+	buf.PopBack() // removes oldest ("c"); offset advances
+	start, end = buf.Bounds()
+	fmt.Printf("after PopBack:     bounds=(%d,%d) tail=%v\n", start, end, buf.Tail())
+
+	buf.PopFront() // removes newest ("e"); end shrinks
+	start, end = buf.Bounds()
+	fmt.Printf("after PopFront:    bounds=(%d,%d) tail=%v\n", start, end, buf.Tail())
+
+	// Output:
+	// after 3 writes:    bounds=(0,3) tail=[a b c]
+	// after 2 evictions: bounds=(2,5) tail=[c d e]
+	// after PopBack:     bounds=(3,5) tail=[d e]
+	// after PopFront:    bounds=(3,4) tail=[d]
+}
+
+// ExampleBuf_Front shows the relationship between Front, Back, and Tail.
+func ExampleBuf_Front() {
+	buf := tailbuf.New[int](3)
+	buf.WriteAll(10, 20, 30)
+	fmt.Println("front:", buf.Front()) // newest
+	fmt.Println("back: ", buf.Back())  // oldest
+
+	// Front/Back on an empty buffer return the zero value of T rather than
+	// panicking.
+	empty := tailbuf.New[int](3)
+	fmt.Println("empty front:", empty.Front())
+	fmt.Println("empty back: ", empty.Back())
+
+	// Output:
+	// front: 30
+	// back:  10
+	// empty front: 0
+	// empty back:  0
+}
+
+// ExampleBuf_PopFront shows that PopFront returns the newest live item and
+// shrinks the tail from its newest end without changing Offset.
+func ExampleBuf_PopFront() {
+	buf := tailbuf.New[string](3)
+	buf.WriteAll("a", "b", "c")
+
+	fmt.Println("popped:", buf.PopFront()) // returns "c"
+	fmt.Println("tail:  ", buf.Tail())
+	fmt.Println("offset:", buf.Offset()) // unchanged
+	fmt.Println("len:   ", buf.Len())
+
+	// Output:
+	// popped: c
+	// tail:   [a b]
+	// offset: 0
+	// len:    2
+}
+
+// ExampleBuf_PopBack shows that PopBack returns the oldest live item and
+// advances Offset by one.
+func ExampleBuf_PopBack() {
+	buf := tailbuf.New[string](3)
+	buf.WriteAll("a", "b", "c")
+
+	fmt.Println("popped:", buf.PopBack()) // returns "a"
+	fmt.Println("tail:  ", buf.Tail())
+	fmt.Println("offset:", buf.Offset()) // advanced
+	fmt.Println("len:   ", buf.Len())
+
+	// Output:
+	// popped: a
+	// tail:   [b c]
+	// offset: 1
+	// len:    2
+}
+
+// ExampleBuf_Do shows the index/tailOffset arguments and how to derive a
+// nominal index from them.
+func ExampleBuf_Do() {
+	buf := tailbuf.New[string](3)
+	buf.WriteAll("a", "b", "c", "d", "e") // offset becomes 2
+
+	_ = buf.Do(context.Background(),
+		func(_ context.Context, item string, index, tailOffset int) (string, error) {
+			nominal := index + tailOffset
+			return fmt.Sprintf("%d:%s", nominal, item), nil
+		})
+	fmt.Println(buf.Tail())
+
+	// Output:
+	// [2:c 3:d 4:e]
+}
+
+// ExampleBuf_Reset_vs_Clear contrasts Reset (which zeroes Written and
+// Offset) with Clear (which preserves Written and bumps Offset by Len).
+func ExampleBuf_Reset_vs_Clear() {
+	demo := func(label string, mutate func(*tailbuf.Buf[string])) {
+		buf := tailbuf.New[string](3)
+		buf.WriteAll("a", "b", "c", "d", "e")
+		mutate(buf)
+		buf.Write("z")
+		start, end := buf.Bounds()
+		fmt.Printf("%s: written=%d bounds=(%d,%d) tail=%v\n",
+			label, buf.Written(), start, end, buf.Tail())
+	}
+
+	demo("Reset", func(b *tailbuf.Buf[string]) { b.Reset() })
+	demo("Clear", func(b *tailbuf.Buf[string]) { b.Clear() })
+
+	// Output:
+	// Reset: written=1 bounds=(0,1) tail=[z]
+	// Clear: written=6 bounds=(5,6) tail=[z]
+}
+
+// ExampleSliceTail shows tail-relative slicing with permissive bounds.
+func ExampleSliceTail() {
+	buf := tailbuf.New[int](5)
+	buf.WriteAll(1, 2, 3, 4, 5)
+	fmt.Println(tailbuf.SliceTail(buf, 0, 2))   // first two
+	fmt.Println(tailbuf.SliceTail(buf, 3, 5))   // last two
+	fmt.Println(tailbuf.SliceTail(buf, 4, 100)) // clipped to end
+
+	// Output:
+	// [1 2]
+	// [4 5]
+	// [5]
+}
+
+// ExampleSliceNominal shows nominal-index slicing after eviction has moved
+// Offset above 0.
+func ExampleSliceNominal() {
+	buf := tailbuf.New[int](3)
+	buf.WriteAll(1, 2, 3, 4, 5) // bounds become (2, 5)
+	fmt.Println(tailbuf.SliceNominal(buf, 2, 5)) // entire live tail
+	fmt.Println(tailbuf.SliceNominal(buf, 1, 3)) // 1 is evicted; only nominal 2 remains
+	fmt.Println(tailbuf.SliceNominal(buf, 5, 9)) // entirely past end
+
+	// Output:
+	// [3 4 5]
+	// [3]
+	// []
+}
+
+// ExampleNew_zeroCapacity demonstrates the counter-only mode of a
+// zero-capacity buffer.
+func ExampleNew_zeroCapacity() {
+	buf := tailbuf.New[string](0)
+	buf.WriteAll("a", "b", "c")
+	fmt.Println("cap:    ", buf.Cap())
+	fmt.Println("len:    ", buf.Len())
+	fmt.Println("written:", buf.Written())
+	fmt.Println("tail:   ", buf.Tail())
+
+	// Output:
+	// cap:     0
+	// len:     0
+	// written: 3
+	// tail:    []
+}
+
 func TestTail(t *testing.T) {
 	buf := tailbuf.New[rune](3)
 	gotLen := buf.Len()
