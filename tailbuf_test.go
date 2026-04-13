@@ -639,3 +639,369 @@ func requireZeroInternalWindow[T any](tb testing.TB, buf *tailbuf.Buf[T]) {
 		require.Zero(tb, window[i])
 	}
 }
+
+// The Bug-* tests below are regression tests for issues identified during
+// the initial code review. Each test references the bug label used in the
+// review notes and the function-level doc comments in tailbuf.go.
+
+// TestBugA1_ApplyOverIteration covers the case where the tail has a single
+// item at a non-zero physical position. The pre-fix Apply iterated over the
+// dead positions of window and applied fn to the live item twice; this test
+// uses a non-idempotent fn so that any over-iteration shows up in the
+// result.
+func TestBugA1_ApplyOverIteration(t *testing.T) {
+	t.Run("len=1_after_pops_at_non_zero_index", func(t *testing.T) {
+		buf := tailbuf.New[string](3)
+		buf.WriteAll("a", "b", "c", "d") // wrap: window=[d,b,c], back=1
+		buf.PopFront()                   // remove d, len=2
+		buf.PopFront()                   // remove c, len=1, single item 'b' at window[1]
+
+		calls := 0
+		buf.Apply(func(s string) string {
+			calls++
+			return s + "!"
+		})
+		require.Equal(t, 1, calls, "fn must run exactly once when Len==1")
+		require.Equal(t, []string{"b!"}, buf.Tail())
+	})
+
+	t.Run("len=1_at_index_zero", func(t *testing.T) {
+		buf := tailbuf.New[string](3)
+		buf.WriteAll("a") // back=0, len=1, single item at window[0]
+
+		calls := 0
+		buf.Apply(func(s string) string {
+			calls++
+			return s + "!"
+		})
+		require.Equal(t, 1, calls)
+		require.Equal(t, []string{"a!"}, buf.Tail())
+	})
+
+	t.Run("len=2_wrapped_calls_each_once", func(t *testing.T) {
+		// Sanity check: the multi-item wrap case still works correctly.
+		buf := tailbuf.New[int](3)
+		buf.WriteAll(1, 2, 3, 4) // window=[4,2,3], back=1
+		buf.PopFront()           // remove 4, len=2
+
+		calls := 0
+		buf.Apply(func(n int) int {
+			calls++
+			return n * 10
+		})
+		require.Equal(t, 2, calls)
+		require.Equal(t, []int{20, 30}, buf.Tail())
+	})
+}
+
+// TestBugA1_DoArguments covers the historical mismatch between the Do
+// godoc and its implementation. The godoc says fn receives
+// (item, tailRelativeIndex, tailOffset), but the previous code passed
+// (item, physicalIndex, tailRelativeIndex). The fix makes the values match
+// the documented contract.
+func TestBugA1_DoArguments(t *testing.T) {
+	buf := tailbuf.New[int](3)
+	buf.WriteAll(10, 20, 30, 40) // window=[40,20,30], back=1, offset=1
+
+	type call struct {
+		item, index, tailOffset int
+	}
+	var calls []call
+	err := buf.Do(context.Background(), func(_ context.Context, item, index, tailOffset int) (int, error) {
+		calls = append(calls, call{item, index, tailOffset})
+		return item, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, []call{
+		{item: 20, index: 0, tailOffset: 1},
+		{item: 30, index: 1, tailOffset: 1},
+		{item: 40, index: 2, tailOffset: 1},
+	}, calls)
+}
+
+// TestBugA2_SliceTailAfterPopBack covers the case where the live items do
+// not wrap but b.back > 0. The pre-fix SliceTail indexed window[start:end]
+// directly, which silently returned items from before the live region.
+func TestBugA2_SliceTailAfterPopBack(t *testing.T) {
+	buf := tailbuf.New[int](5)
+	buf.WriteAll(1, 2, 3) // back=0, len=3
+	buf.PopBack()         // back=1, len=2, tail=[2,3]
+
+	require.Equal(t, []int{2, 3}, buf.Tail())
+	require.Equal(t, []int{2, 3}, tailbuf.SliceTail(buf, 0, 2))
+	require.Equal(t, []int{2}, tailbuf.SliceTail(buf, 0, 1))
+	require.Equal(t, []int{3}, tailbuf.SliceTail(buf, 1, 2))
+}
+
+// TestBugA3_SliceTailSingleItemElsewhere covers the case where the only
+// live item is not at window[0]. The pre-fix code special-cased this by
+// returning window[0] regardless of where the item actually lived.
+func TestBugA3_SliceTailSingleItemElsewhere(t *testing.T) {
+	t.Run("after_pops_from_wrapped_state", func(t *testing.T) {
+		buf := tailbuf.New[string](3)
+		buf.WriteAll("a", "b", "c", "d") // window=[d,b,c]
+		buf.PopFront()                   // remove d, len=2
+		buf.PopFront()                   // remove c, len=1, item 'b' at window[1]
+
+		require.Equal(t, []string{"b"}, buf.Tail())
+		require.Equal(t, []string{"b"}, tailbuf.SliceTail(buf, 0, 1))
+	})
+
+	t.Run("after_popback_to_single", func(t *testing.T) {
+		buf := tailbuf.New[string](3)
+		buf.WriteAll("a", "b", "c") // window=[a,b,c]
+		buf.PopBack()               // remove a, item 'c' at window[2]
+		buf.PopBack()               // remove b, single item 'c' at window[2]
+
+		require.Equal(t, []string{"c"}, buf.Tail())
+		require.Equal(t, []string{"c"}, tailbuf.SliceTail(buf, 0, 1))
+	})
+}
+
+// TestBugA4_SliceOutOfRange covers the previously-undefined behavior of
+// passing nominal or tail-relative indices that fall past the live tail
+// against a wrapped buffer. The functions now return an empty slice
+// rather than panicking.
+func TestBugA4_SliceOutOfRange(t *testing.T) {
+	buf := tailbuf.New[int](3)
+	buf.WriteAll(1, 2, 3, 4, 5) // window=[4,5,3], offset=2, len=3, written=5
+
+	t.Run("SliceTail_past_end", func(t *testing.T) {
+		require.Empty(t, tailbuf.SliceTail(buf, 4, 5))
+		require.Empty(t, tailbuf.SliceTail(buf, 3, 3))
+		require.Empty(t, tailbuf.SliceTail(buf, 100, 200))
+	})
+
+	t.Run("SliceNominal_past_end", func(t *testing.T) {
+		require.Empty(t, tailbuf.SliceNominal(buf, 5, 6))
+		require.Empty(t, tailbuf.SliceNominal(buf, 100, 200))
+	})
+
+	t.Run("SliceNominal_overlapping_end", func(t *testing.T) {
+		// The valid nominal range is [2,5); asking for [4,7) should clip
+		// to [4,5) and return only the last live item.
+		require.Equal(t, []int{5}, tailbuf.SliceNominal(buf, 4, 7))
+	})
+
+	t.Run("SliceNominal_before_start", func(t *testing.T) {
+		// Asking for nominals entirely below offset returns empty.
+		require.Empty(t, tailbuf.SliceNominal(buf, 0, 2))
+	})
+
+	t.Run("SliceTail_panics_on_negative_start", func(t *testing.T) {
+		require.Panics(t, func() { _ = tailbuf.SliceTail(buf, -1, 1) })
+	})
+
+	t.Run("SliceTail_panics_on_inverted_range", func(t *testing.T) {
+		require.Panics(t, func() { _ = tailbuf.SliceTail(buf, 2, 1) })
+	})
+
+	t.Run("SliceNominal_panics_on_inverted_range", func(t *testing.T) {
+		require.Panics(t, func() { _ = tailbuf.SliceNominal(buf, 5, 4) })
+	})
+}
+
+// TestBugA5_WriteAfterPopFront covers the state-corruption case where the
+// pre-fix write predicate (b.written > cap) caused an unwarranted eviction
+// after a PopFront freed space in the tail. The new predicate (b.len ==
+// cap) only evicts when the tail is actually full.
+func TestBugA5_WriteAfterPopFront(t *testing.T) {
+	buf := tailbuf.New[string](3)
+	buf.WriteAll("a", "b", "c") // tail=[a,b,c], len=3, written=3
+	buf.PopFront()              // remove c, tail=[a,b], len=2, written=3
+	require.Equal(t, []string{"a", "b"}, buf.Tail())
+
+	// With the pre-fix bug, this Write would evict 'a' (because written
+	// becomes 4 > cap), leaving Len()==3 but Tail()==[b,d].
+	buf.Write("d")
+
+	require.Equal(t, 3, buf.Len())
+	require.Equal(t, []string{"a", "b", "d"}, buf.Tail())
+	require.Equal(t, 4, buf.Written())
+
+	// And one more write should now correctly evict the actual oldest, 'a'.
+	buf.Write("e")
+	require.Equal(t, []string{"b", "d", "e"}, buf.Tail())
+	require.Equal(t, 5, buf.Written())
+}
+
+// TestBugA6_BoundsAfterMutations covers the cases where the pre-fix
+// Bounds/Offset/InBounds returned ranges that included indices no longer
+// (or never) live. The new versions track offset explicitly via Pop/Clear.
+func TestBugA6_BoundsAfterMutations(t *testing.T) {
+	t.Run("after_PopBack_advances_offset", func(t *testing.T) {
+		buf := tailbuf.New[string](3)
+		buf.WriteAll("a", "b", "c")
+		buf.PopBack() // 'a' is gone; offset advances by 1
+
+		start, end := buf.Bounds()
+		require.Equal(t, 1, start)
+		require.Equal(t, 3, end)
+		require.Equal(t, 1, buf.Offset())
+		require.False(t, buf.InBounds(0))
+		require.True(t, buf.InBounds(1))
+		require.True(t, buf.InBounds(2))
+		require.False(t, buf.InBounds(3))
+	})
+
+	t.Run("after_PopFront_shrinks_end", func(t *testing.T) {
+		buf := tailbuf.New[string](3)
+		buf.WriteAll("a", "b", "c")
+		buf.PopFront() // 'c' is gone; offset unchanged, end shrinks
+
+		start, end := buf.Bounds()
+		require.Equal(t, 0, start)
+		require.Equal(t, 2, end)
+		require.True(t, buf.InBounds(0))
+		require.True(t, buf.InBounds(1))
+		require.False(t, buf.InBounds(2))
+	})
+
+	t.Run("after_Clear_bounds_are_empty_at_next_write_pos", func(t *testing.T) {
+		buf := tailbuf.New[string](3)
+		buf.WriteAll("a", "b", "c", "d", "e") // offset=2, written=5
+		buf.Clear()
+
+		start, end := buf.Bounds()
+		require.Equal(t, 5, start)
+		require.Equal(t, 5, end)
+		require.False(t, buf.InBounds(0))
+		require.False(t, buf.InBounds(2))
+		require.False(t, buf.InBounds(4))
+		require.False(t, buf.InBounds(5))
+
+		// The next write lives at the new offset.
+		buf.Write("f")
+		require.True(t, buf.InBounds(5))
+		require.Equal(t, []string{"f"}, buf.Tail())
+	})
+
+	t.Run("after_DropBackN_advances_offset_by_n", func(t *testing.T) {
+		buf := tailbuf.New[int](5)
+		buf.WriteAll(1, 2, 3, 4, 5)
+		buf.DropBackN(2) // remove 1, 2
+
+		start, end := buf.Bounds()
+		require.Equal(t, 2, start)
+		require.Equal(t, 5, end)
+		require.False(t, buf.InBounds(1))
+		require.True(t, buf.InBounds(2))
+	})
+
+	t.Run("InBounds_false_when_empty", func(t *testing.T) {
+		buf := tailbuf.New[int](3)
+		require.False(t, buf.InBounds(0))
+	})
+}
+
+// TestBugA7_ZeroValueBuf covers the case where calls on a zero-value Buf
+// (i.e. var buf tailbuf.Buf[T]) panicked in the prior implementation
+// because the empty-state sentinel was stored as front==-1 in New, but the
+// zero value defaults front to 0 and indexes into a nil window. The new
+// implementation uses len==0 as the empty check, so the zero value is
+// genuinely usable as an empty zero-capacity buffer.
+func TestBugA7_ZeroValueBuf(t *testing.T) {
+	var buf tailbuf.Buf[string]
+
+	require.Equal(t, 0, buf.Cap())
+	require.Equal(t, 0, buf.Len())
+	require.Equal(t, 0, buf.Written())
+	require.Equal(t, 0, buf.Offset())
+	require.Empty(t, buf.Tail())
+	require.Empty(t, buf.Front())
+	require.Empty(t, buf.Back())
+	require.Empty(t, buf.PopFront())
+	require.Empty(t, buf.PopBack())
+	require.Empty(t, buf.PopFrontN(3))
+	require.Empty(t, buf.PopBackN(3))
+	require.Empty(t, tailbuf.SliceTail(&buf, 0, 5))
+	require.Empty(t, tailbuf.SliceNominal(&buf, 0, 5))
+
+	buf.DropBack()
+	buf.DropBackN(3)
+	require.Equal(t, 0, buf.Len())
+
+	// Writes to a zero-cap buffer are silently dropped but still counted.
+	buf.Write("x").WriteAll("y", "z")
+	require.Equal(t, 0, buf.Len())
+	require.Equal(t, 3, buf.Written())
+}
+
+// TestBugA8_NewPanicMessage verifies the panic message for a negative
+// capacity no longer contains the development FIXME string.
+func TestBugA8_NewPanicMessage(t *testing.T) {
+	defer func() {
+		r := recover()
+		require.NotNil(t, r)
+		msg, ok := r.(string)
+		require.True(t, ok)
+		require.NotContains(t, msg, "FIXME")
+	}()
+	_ = tailbuf.New[int](-1)
+}
+
+// TestPopFrontWriteReuseNominalIndex documents (and pins) the model
+// described in the package doc: after PopFront, the next Write occupies
+// the nominal index that the popped item had. This is a behavioral
+// contract worth a test so it doesn't drift unintentionally.
+func TestPopFrontWriteReuseNominalIndex(t *testing.T) {
+	buf := tailbuf.New[string](3)
+	buf.WriteAll("a", "b", "c") // tail=[a,b,c], offset=0, len=3
+	require.Equal(t, "c", buf.Front())
+	require.Equal(t, 2, buf.Offset()+buf.Len()-1) // c at nominal 2
+
+	buf.PopFront()    // tail=[a,b], offset=0, len=2
+	buf.Write("c2")   // tail=[a,b,c2], offset=0, len=3; c2 at nominal 2
+	require.Equal(t, "c2", buf.Front())
+	require.Equal(t, 2, buf.Offset()+buf.Len()-1)
+	start, end := buf.Bounds()
+	require.Equal(t, 0, start)
+	require.Equal(t, 3, end)
+}
+
+// TestSliceTail_AfterClearAndRefill verifies that the Slice* helpers
+// continue to work after Clear has bumped offset.
+func TestSliceTail_AfterClearAndRefill(t *testing.T) {
+	buf := tailbuf.New[int](3)
+	buf.WriteAll(1, 2, 3, 4, 5) // offset=2
+	buf.Clear()                  // offset=5
+	buf.WriteAll(10, 20)         // tail=[10,20] at nominals [5,6]
+
+	require.Equal(t, []int{10, 20}, buf.Tail())
+	require.Equal(t, []int{10, 20}, tailbuf.SliceTail(buf, 0, 2))
+	require.Equal(t, []int{10, 20}, tailbuf.SliceNominal(buf, 5, 7))
+	require.Equal(t, []int{20}, tailbuf.SliceNominal(buf, 6, 7))
+	require.Empty(t, tailbuf.SliceNominal(buf, 0, 5)) // pre-clear range is gone
+}
+
+// TestPopFront_PopFrontN_Equivalence mirrors TestPopBack_PopBackN_Equivalence
+// for the front-end pop variants.
+func TestPopFront_PopFrontN_Equivalence(t *testing.T) {
+	all := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
+	buf1 := tailbuf.New[string](10).WriteAll(all...)
+	buf2 := tailbuf.New[string](10).WriteAll(all...)
+
+	popped1 := buf1.PopFrontN(4)
+	var popped2 []string
+	for i := 0; i < 4; i++ {
+		popped2 = append([]string{buf2.PopFront()}, popped2...)
+	}
+
+	require.Equal(t, popped1, popped2)
+	tailbuf.RequireEqualInternalState(t, buf1, buf2)
+	require.Equal(t, buf1.Tail(), buf2.Tail())
+}
+
+// TestDropBack_DropBackN_Equivalence is the analogous parity test for the
+// drop-back variants.
+func TestDropBack_DropBackN_Equivalence(t *testing.T) {
+	all := []rune{'a', 'b', 'c', 'd', 'e'}
+	buf1 := tailbuf.New[rune](5).WriteAll(all...)
+	buf2 := tailbuf.New[rune](5).WriteAll(all...)
+
+	buf1.DropBackN(3)
+	for i := 0; i < 3; i++ {
+		buf2.DropBack()
+	}
+	tailbuf.RequireEqualInternalState(t, buf1, buf2)
+}

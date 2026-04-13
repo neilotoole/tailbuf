@@ -1,618 +1,634 @@
-// Package tailbuf contains a tail buffer [Buf] of fixed size that provides a
-// window on the tail of the items written via [Buf.Write] or [Buf.WriteAll].
-// Start with [tailbuf.New] to create a [Buf].
+// Package tailbuf contains a fixed-size [Buf] that retains the most recent
+// items written to it. Start with [tailbuf.New] to construct one.
+//
+// # Model
+//
+// A [Buf] is conceptually a sliding window over a longer "nominal" stream of
+// writes. Each call to [Buf.Write] or [Buf.WriteAll] appends to that stream.
+// When the tail window is at capacity, the next write evicts the oldest item
+// to make room.
+//
+// Items in the tail window are addressed by nominal index. The i-th item in
+// the tail occupies nominal index [Buf.Offset]() + i. [Buf.Bounds] returns
+// the half-open nominal range [Offset, Offset+Len) currently held; [Buf.InBounds]
+// reports whether a given nominal index is one of the live items.
+//
+// [Buf.Written] tracks the total count of writes ever made; it is independent
+// of [Buf.Offset] and is not changed by pops.
+//
+// # Pop semantics
+//
+// [Buf.PopBack] / [Buf.DropBack] remove the oldest live item; this advances
+// [Buf.Offset] just like an eviction would. [Buf.PopFront] removes the newest
+// live item and does NOT advance [Buf.Offset]; the tail window simply shrinks
+// from its newest end.
+//
+// One subtle consequence: after [Buf.PopFront], the next [Buf.Write] occupies
+// the nominal index that the popped item had. The buffer does not preserve
+// "holes" in nominal-index space; the live items always occupy a contiguous
+// nominal range. Mixing pops with writes is supported, but if your code
+// relies on a one-to-one mapping between writes and nominal indices, do not
+// call [Buf.PopFront].
 package tailbuf
 
 import "context"
 
-// Buf is an append-only fixed-size circular buffer that provides a window on
-// the tail of items written to the buffer. The zero value is technically
-// usable, but not very useful. Instead, invoke [tailbuf.New] to create a Buf.
-// Buf is not safe for concurrent use.
+// Buf is an append-only, fixed-size circular buffer that exposes a window on
+// the most recently written items. It is not safe for concurrent use.
 //
-// Note the terms "nominal buffer" and "tail window" (or just "window"). The
-// nominal buffer is the complete list of items written to Buf via the
-// [Buf.Write] or [Buf.WriteAll] methods. However, Buf drops the oldest items as
-// it fills (which is the entire point of this package): the tail window is the
-// subset of the nominal buffer that is currently available.
+// The zero value of Buf is a usable, empty, zero-capacity buffer that
+// silently discards writes (it still increments [Buf.Written]). Use
+// [tailbuf.New] to specify a non-zero capacity.
+//
+// Buf maintains the following invariants at every public-method boundary:
+//
+//   - 0 <= len <= len(window)
+//   - When len > 0, back is in [0, len(window)) and points to the physical
+//     index of the oldest live item.
+//   - When len == 0, back's value is unspecified (callers must not read it).
+//   - offset is monotonically non-decreasing; it is bumped only by
+//     eviction-on-write, by Pop/Drop from the back, and by Clear.
+//   - written is monotonically non-decreasing; it is bumped only by Write
+//     and WriteAll.
+//
+// See the package documentation for the buffer's overall model.
 type Buf[T any] struct {
-	// zero is the zero value of T, used for zeroing elements of the in-use
-	// window so that after operations like Buf.DropBack we don't accidentally
-	// hold on to references. This is probably a premature optimization; needs
-	// benchmarks.
-	zero T
-
-	// window is the circular buffer.
+	// window is the underlying circular storage. Its length is the buffer's
+	// capacity (see [Buf.Cap]). When capacity is 0, window is nil.
 	window []T
 
-	// len is the number of items currently in the buffer.
-	len int
-
-	// back is the cursor for the oldest item.
+	// back is the physical index in window of the oldest live item.
+	// Meaningful only when len > 0.
+	//
+	// Note: previous versions of Buf also tracked a `front` field, with
+	// `back == -1` and `front == -1` used as an "empty" sentinel. That dual
+	// state was removable: front is fully derivable from (back + len - 1)
+	// modulo capacity, and emptiness is equivalent to len == 0. Removing
+	// front cuts a class of state-coherence bugs (notably the zero-value
+	// Front()/Back() panic; see Buf.Front for the historical bug A7).
 	back int
 
-	// REVISIT: Do we need both back and front?
-	// Could we just use back and len?
+	// len is the number of live items in the tail window.
+	len int
 
-	// front is the cursor for the newest item.
-	front int
+	// offset is the nominal index of the oldest live item, equivalently the
+	// count of items removed from the back of the tail (by eviction-on-write,
+	// PopBack, DropBack, PopBackN, DropBackN, or Clear). PopFront does NOT
+	// change offset.
+	//
+	// Tracking offset explicitly fixes bug A6: the previous implementation
+	// derived it lazily as written-cap, which was correct only when no pops
+	// had occurred and gave wrong answers for Bounds, Offset, and InBounds
+	// after any pop or clear.
+	offset int
 
-	// written is the total number of items added via Buf.Write or Buf.WriteAll.
+	// written counts every successful Write/WriteAll item, including items
+	// that were silently dropped because capacity is zero. It is independent
+	// of offset and len; it is not modified by pops.
 	written int
 }
 
-// New returns a new Buf with the specified capacity. It panics if capacity is
-// less than 1.
+// New returns a new [Buf] with the specified capacity. It panics if capacity
+// is negative. A buffer with capacity 0 is permitted and will silently
+// discard items written to it (while still incrementing [Buf.Written]).
 func New[T any](capacity int) *Buf[T] {
 	if capacity < 0 {
-		panic("capacity must be >= 0") // FIXME: make zero value usable
+		// Bug A8 fix: the previous panic message embedded a "FIXME" string,
+		// which leaked development notes into the runtime error.
+		panic("tailbuf: capacity must not be negative")
 	}
-
 	return &Buf[T]{
 		window: make([]T, capacity),
-		back:   -1,
-		front:  -1,
 	}
 }
 
-// Write appends t to the buffer. If the buffer fills, the oldest item is
-// overwritten. The buffer is returned for chaining.
-func (b *Buf[T]) Write(t T) *Buf[T] {
+// Write appends item to the tail window. If the window is at capacity, the
+// oldest live item is evicted to make room (and [Buf.Offset] advances by
+// one). Returns b for chaining.
+func (b *Buf[T]) Write(item T) *Buf[T] {
 	if len(b.window) == 0 {
-		// We won't actually store the item, but we still count it.
+		// Capacity 0: the item is dropped on the floor, but Written still
+		// reflects that the user attempted a write.
 		b.written++
 		return b
 	}
-
-	b.write(t)
+	b.write(item)
 	return b
 }
 
-// WriteAll appends items to the buffer. If the buffer fills, the oldest items
-// are overwritten. The buffer is returned for chaining.
-func (b *Buf[T]) WriteAll(a ...T) *Buf[T] {
+// WriteAll appends each item to the tail window in order. Equivalent to
+// calling [Buf.Write] for each item. Returns b for chaining.
+func (b *Buf[T]) WriteAll(items ...T) *Buf[T] {
 	if len(b.window) == 0 {
-		// We won't actually store the items, but we still count them.
-		b.written += len(a)
+		b.written += len(items)
 		return b
 	}
-
-	for i := range a {
-		b.write(a[i])
+	for i := range items {
+		b.write(items[i])
 	}
 	return b
 }
 
-// write appends item [Buf]. If the buffer is full, the oldest item is
-// overwritten.
+// write performs a single append. The caller has already verified
+// len(b.window) > 0, so write never divides by zero on the modulus.
+//
+// Bug A5 fix: the eviction predicate is `b.len == cap`, not the previous
+// `b.written > cap`. The old predicate was correct only when no items had
+// ever been popped. Once PopFront ran and freed a slot, the next Write
+// would still evict (because written had crossed cap historically), leaving
+// the buffer in a logically-impossible state where Len() reported one count
+// and Tail() returned a different one.
 func (b *Buf[T]) write(item T) {
 	b.written++
+	winLen := len(b.window)
 	switch {
-	case b.front == -1:
+	case b.len == 0:
+		// First item into an empty tail. We pin back to 0 so the storage
+		// fills sequentially when starting fresh; this also makes the
+		// slice returned by Tail() share storage with window in the simple
+		// no-wrap case.
 		b.back = 0
-	case b.written > len(b.window):
-		b.back = (b.back + 1) % len(b.window)
+		b.window[0] = item
+		b.len = 1
+	case b.len == winLen:
+		// Tail at capacity; the new item replaces the oldest one in place.
+		// The "oldest" advances by one, which also bumps offset because the
+		// evicted item leaves the nominal range entirely.
+		b.window[b.back] = item
+		b.back = (b.back + 1) % winLen
+		b.offset++
 	default:
-	}
-
-	b.front = (b.front + 1) % len(b.window)
-	b.window[b.front] = item
-	if b.len < len(b.window) {
+		// Room remaining; place item just past the current front.
+		b.window[(b.back+b.len)%winLen] = item
 		b.len++
 	}
 }
 
-// Tail returns a slice containing the items currently in the buffer, in
-// oldest-to-newest order. If possible, the returned slice shares the buffer's
-// internal window, but a fresh slice is allocated if necessary. Thus you
-// should copy the returned slice before modifying it, or instead use
-// [SliceTail].
-func (b *Buf[T]) Tail() []T {
-	switch {
-	case b.len == 0:
-		return b.window[:0]
-	case b.len == 1:
-		return b.window[b.front : b.front+1]
-	case b.front > b.back:
-		return b.window[b.back : b.front+1]
-	default:
-		s := make([]T, b.len)
-		copy(s, b.window[b.back:])
-		copy(s[len(b.window)-b.back:], b.window[:b.front+1])
-		return s
-	}
-}
-
-// tailNewSlice is like Buf.Tail but it always returns a fresh slice.
-func (b *Buf[T]) tailNewSlice() []T {
-	switch {
-	case b.len == 0:
-		return make([]T, 0)
-	case b.len == 1:
-		return []T{b.window[b.front]}
-	case b.front > b.back:
-		s := make([]T, b.front-b.back+1)
-		copy(s, b.window[b.back:b.front+1])
-		return s
-	default:
-		s := make([]T, b.len)
-		copy(s, b.window[b.back:])
-		copy(s[len(b.window)-b.back:], b.window[:b.front+1])
-		return s
-	}
-}
-
-// Written returns the total number of items written to the buffer.
-func (b *Buf[T]) Written() int {
-	return b.written
-}
-
-// InBounds returns true if the index i of the nominal buffer is within the
-// bounds of the tail window. That is to say, InBounds returns true if the ith
-// item written to the buffer is still in the tail window.
-func (b *Buf[T]) InBounds(i int) bool {
-	if b.written == 0 || i < 0 || len(b.window) == 0 {
-		return false
-	}
-	start, end := b.Bounds()
-	return i >= start && i < end
-}
-
-// Bounds returns the start and end indices of the tail window vs the nominal
-// buffer. If the buffer is empty, start and end are both 0. The returned
-// values are the same as [Buf.Offset] and [Buf.Written].
-func (b *Buf[T]) Bounds() (start, end int) {
-	return b.Offset(), b.Written()
-}
-
-// Cap returns the capacity of Buf, which is the fixed size specified when
-// the buffer was created.
+// Cap returns the buffer's fixed capacity.
 func (b *Buf[T]) Cap() int {
 	return len(b.window)
 }
 
-// Len returns the number of items currently in the buffer.
+// Len returns the number of items currently in the tail window. The result
+// is always in [0, [Buf.Cap]].
 func (b *Buf[T]) Len() int {
 	return b.len
 }
 
-// zeroTail zeroes out the items in the tail window.
-func (b *Buf[T]) zeroTail() {
-	if b.front > b.back {
-		for i := b.back; i <= b.front; i++ {
-			b.window[i] = b.zero
-		}
-	} else {
-		for i := b.back; i < len(b.window); i++ {
-			b.window[i] = b.zero
-		}
-		for i := 0; i <= b.front; i++ {
-			b.window[i] = b.zero
-		}
-	}
-}
-
-// Reset resets the buffer to its initial state, including the value returned
-// by [Buf.Written]. The buffer is returned for chaining. Any items in the
-// buffer are zeroed out.
+// Written returns the total number of items passed to [Buf.Write] or
+// [Buf.WriteAll]. It includes items that were evicted, popped, dropped, or
+// silently discarded by a zero-capacity buffer.
 //
-// See also: [Buf.Clear].
-func (b *Buf[T]) Reset() *Buf[T] {
-	b.Clear()
-	b.written = 0
-	return b
+// Written is independent of [Buf.Offset] and [Buf.Len]: after a [Buf.PopFront],
+// Written is unchanged but the upper end of [Buf.Bounds] shrinks.
+func (b *Buf[T]) Written() int {
+	return b.written
 }
 
-// Clear removes all items from the buffer, zeroing all values. This is similar
-// to [Buf.Reset], but note that the value returned by [Buf.Written] is
-// unchanged. The buffer is returned for chaining.
+// Offset returns the nominal index of the oldest live item, or 0 if the tail
+// is empty. Equivalently, it is the number of items that have left the back
+// of the tail by eviction-on-write or by [Buf.PopBack] / [Buf.DropBack] /
+// [Buf.PopBackN] / [Buf.DropBackN] / [Buf.Clear]. [Buf.PopFront] does NOT
+// advance Offset.
 //
-// See also: [Buf.Reset].
-func (b *Buf[T]) Clear() *Buf[T] {
-	b.zeroTail()
-
-	b.back = -1
-	b.front = -1
-	b.len = 0
-
-	return b
-}
-
-// Offset returns the offset of the current window vs the nominal complete list
-// of items written to the buffer. It is effectively the count of items that
-// have slipped out of the tail window. If the buffer is empty, the returned
-// offset is 0.
+// Bug A6 fix: Offset is now tracked explicitly. The previous implementation
+// derived it as max(0, written-cap), which gave wrong answers once any pop
+// or clear had occurred.
 func (b *Buf[T]) Offset() int {
-	if b.written <= len(b.window) {
-		return 0
-	}
-
-	return b.written - len(b.window)
+	return b.offset
 }
 
-// Front returns the newest item in the tail window. If Buf is empty, the zero
-// value of T is returned.
+// Bounds returns the half-open nominal range [start, end) currently covered
+// by the tail window. start is [Buf.Offset]; end is [Buf.Offset] + [Buf.Len].
+// The range is empty when [Buf.Len] is 0 (start == end).
+//
+// Bug A6 fix: Bounds previously returned (Offset, Written), which was
+// incorrect after a PopFront (Written did not shrink) and after a Clear
+// (Written stayed at its pre-Clear value while Len was 0).
+func (b *Buf[T]) Bounds() (start, end int) {
+	return b.offset, b.offset + b.len
+}
+
+// InBounds reports whether the nominal index i corresponds to a live item in
+// the tail window. Equivalent to:
+//
+//	start, end := b.Bounds()
+//	b.Len() > 0 && i >= start && i < end
+//
+// Bug A6 fix: InBounds previously returned true for indices that were either
+// never alive (after Clear with non-zero Written) or had been popped from
+// the front. The check now uses Bounds, which reflects the live range.
+func (b *Buf[T]) InBounds(i int) bool {
+	if b.len == 0 || i < 0 {
+		return false
+	}
+	return i >= b.offset && i < b.offset+b.len
+}
+
+// Front returns the newest live item, or the zero value of T when the tail
+// is empty.
+//
+// Bug A7 fix: Front previously checked b.front == -1 to detect emptiness.
+// That sentinel was set by [tailbuf.New] but not by the zero-value Buf
+// (where the field defaulted to 0), so calling Front on a zero-value Buf
+// indexed into a nil window and panicked, contradicting the package doc's
+// "the zero value is usable" promise. The check now uses [Buf.Len].
 func (b *Buf[T]) Front() T {
-	if b.front == -1 {
-		var t T
-		return t
-	}
-	return b.window[b.front]
-}
-
-// PopFront removes and returns the newest item in the tail window.
-func (b *Buf[T]) PopFront() T {
-	if b.front == -1 {
+	if b.len == 0 {
 		var zero T
 		return zero
 	}
-
-	item := b.window[b.front]
-	b.window[b.front] = b.zero
-	if b.front == b.back {
-		b.back = -1
-		b.front = -1
-	} else {
-		b.front = (b.front - 1 + len(b.window)) % len(b.window)
-	}
-	b.len--
-	return item
+	return b.window[(b.back+b.len-1)%len(b.window)]
 }
 
-// Back returns the oldest item in the tail window. If Buf is empty, the zero
-// value of T is returned.
+// Back returns the oldest live item, or the zero value of T when the tail is
+// empty.
+//
+// Bug A7 fix: same fix as [Buf.Front].
 func (b *Buf[T]) Back() T {
-	if b.back == -1 {
-		var t T
-		return t
+	if b.len == 0 {
+		var zero T
+		return zero
 	}
 	return b.window[b.back]
 }
 
-// DropBack removes the oldest item in the tail window.
-// See also: [Buf.PopBack].
-func (b *Buf[T]) DropBack() {
-	if b.back == -1 {
-		return
-	}
-
-	b.window[b.back] = b.zero
-	if b.front == b.back {
-		b.back = -1
-		b.front = -1
-	} else {
-		b.back = (b.back + 1) % len(b.window)
-	}
-	b.len--
-}
-
-// DropBackN removes the oldest n items from the tail, zeroing out the items.
-// If n >= [Buf.Len], all items in the tail window are removed.
-func (b *Buf[T]) DropBackN(n int) {
-	if b.len == 0 || n < 1 {
-		return
-	}
-
-	if n >= b.len {
-		b.Clear()
-		return
-	}
-
-	b.len -= n
-
-	if b.front > b.back {
-		for i := 0; i < n; i++ {
-			b.window[b.back] = b.zero
-			b.back = (b.back + 1) % len(b.window)
-		}
-		return
-	}
-
-	for i := 0; i < n; i++ {
-		b.window[b.back] = b.zero
-		b.back = (b.back + 1) % len(b.window)
-	}
-}
-
-// Peek returns the nth item in the tail window. Peek panics if n is not a valid
-// index, or if the buffer is empty.
+// Peek returns the n-th item in the tail window, counting from the oldest
+// (n=0). Panics if n is negative, n >= [Buf.Len], or the tail is empty.
+//
+// Cleanup (B4): the previous implementation forked on b.front > b.back, but
+// both branches evaluated the same expression. The fork is gone; the
+// modular arithmetic naturally handles wrap.
 func (b *Buf[T]) Peek(n int) T {
-	if b.len == 0 || n < 0 || n >= b.len {
+	if n < 0 || n >= b.len {
 		panic("tailbuf: Peek out of bounds")
 	}
-
-	if b.front > b.back {
-		return b.window[(b.back+n)%len(b.window)]
-	}
-
 	return b.window[(b.back+n)%len(b.window)]
 }
 
-// PopBack removes and returns the oldest item in the tail window. If the buffer
-// is empty, the zero value of T is returned.
-func (b *Buf[T]) PopBack() T {
-	if b.back == -1 {
+// Tail returns a slice containing the items currently in the tail window, in
+// oldest-to-newest order. When the live items do not wrap around the
+// internal window, the returned slice shares storage with the buffer and is
+// invalidated by the next mutation. Use [SliceTail] for a slice that is
+// always independently allocated.
+//
+// The single-item case returns a 1-element slice over the live position
+// regardless of where it sits in the window; the wrap case allocates fresh
+// storage.
+func (b *Buf[T]) Tail() []T {
+	if b.len == 0 {
+		return b.window[:0]
+	}
+	winLen := len(b.window)
+	front := (b.back + b.len - 1) % winLen
+	if b.back <= front {
+		return b.window[b.back : front+1]
+	}
+	return b.tailNewSlice()
+}
+
+// tailNewSlice always allocates a fresh slice of the live items.
+func (b *Buf[T]) tailNewSlice() []T {
+	if b.len == 0 {
+		return []T{}
+	}
+	winLen := len(b.window)
+	s := make([]T, b.len)
+	for i := 0; i < b.len; i++ {
+		s[i] = b.window[(b.back+i)%winLen]
+	}
+	return s
+}
+
+// zeroTail zeroes the storage slots holding live items. Called by [Buf.Reset],
+// [Buf.Clear], and the bulk pop/drop helpers when the tail is being emptied.
+func (b *Buf[T]) zeroTail() {
+	if b.len == 0 {
+		return
+	}
+	var zero T
+	winLen := len(b.window)
+	for i := 0; i < b.len; i++ {
+		b.window[(b.back+i)%winLen] = zero
+	}
+}
+
+// Reset empties the tail window AND resets [Buf.Written] and [Buf.Offset] to
+// 0. The result is indistinguishable from a fresh [tailbuf.New] of the same
+// capacity. Returns b for chaining.
+//
+// See also: [Buf.Clear].
+func (b *Buf[T]) Reset() *Buf[T] {
+	b.zeroTail()
+	b.back = 0
+	b.len = 0
+	b.offset = 0
+	b.written = 0
+	return b
+}
+
+// Clear empties the tail window without resetting [Buf.Written]. The cleared
+// items are conceptually evicted off the back, so [Buf.Offset] advances by
+// the previous [Buf.Len]; this keeps [Buf.Bounds] consistent (the empty
+// range starts at the position of the next write). Returns b for chaining.
+//
+// Bug A6 fix: Clear previously left b.len == 0 while leaving b.offset and
+// b.written unchanged, so Bounds reported a non-empty range over indices
+// that were no longer live.
+//
+// See also: [Buf.Reset].
+func (b *Buf[T]) Clear() *Buf[T] {
+	b.zeroTail()
+	b.offset += b.len
+	b.back = 0
+	b.len = 0
+	return b
+}
+
+// PopFront removes and returns the newest live item. Returns the zero value
+// of T when the tail is empty. Does NOT change [Buf.Offset]; the tail window
+// shrinks from its newest end.
+func (b *Buf[T]) PopFront() T {
+	if b.len == 0 {
 		var zero T
 		return zero
 	}
-
-	item := b.window[b.back]
-	b.window[b.back] = b.zero
-	if b.front == b.back {
-		b.back = -1
-		b.front = -1
-	} else {
-		b.back = (b.back + 1) % len(b.window)
-	}
+	idx := (b.back + b.len - 1) % len(b.window)
+	item := b.window[idx]
+	var zero T
+	b.window[idx] = zero
 	b.len--
 	return item
 }
 
-// PopBackN removes and returns the oldest n items in the tail window. Any
-// removed items are zeroed out from the buffer's internal window. On return,
-// the slice (which is always freshly allocated) contains the removed items, in
-// oldest-to-newest order, and Buf.Len is reduced by n. If n is greater than the
-// number of items in the tail window, all items in the tail window are removed
-// and returned.
-func (b *Buf[T]) PopBackN(n int) []T {
-	if b.len == 0 || n < 1 {
-		return make([]T, 0)
-	}
-
-	if n >= b.len {
-		s := b.tailNewSlice()
-		b.Clear()
-		return s
-	}
-
-	b.len -= n
-	if b.front > b.back {
-		s := make([]T, n)
-		for i := 0; i < n; i++ {
-			s[i] = b.window[b.back]
-			b.window[b.back] = b.zero
-			b.back = (b.back + 1) % len(b.window)
-		}
-		return s
-	}
-
-	s := make([]T, n)
-	for i := 0; i < n; i++ {
-		s[i] = b.window[b.back]
-		b.window[b.back] = b.zero
-		b.back = (b.back + 1) % len(b.window)
-	}
-	return s
-}
-
-// PopFrontN removes and returns the newest n items in the tail window. Any
-// removed items are zeroed out from the buffer's internal window. On return,
-// the slice (which is always freshly allocated) contains the removed items, in
-// oldest-to-newest order, and Buf.Len is reduced by n. If n is greater than the
-// number of items in the tail window, all items in the tail window are removed
-// and returned.
+// PopFrontN removes and returns up to n newest items, in oldest-to-newest
+// order (i.e. the last element of the returned slice is the item that was
+// previously the front). Does NOT change [Buf.Offset]. n <= 0 returns an
+// empty slice; n >= [Buf.Len] empties the tail and returns all items.
+//
+// The returned slice is freshly allocated.
+//
+// Cleanup (B4): the prior implementation forked on b.front > b.back; both
+// branches were textually identical.
 func (b *Buf[T]) PopFrontN(n int) []T {
 	if b.len == 0 || n < 1 {
-		return make([]T, 0)
+		return []T{}
 	}
-
 	if n >= b.len {
 		s := b.tailNewSlice()
+		b.zeroTail()
+		// We deliberately do NOT bump b.offset (PopFront semantics shrink
+		// from the front). We also don't call Clear, which would.
+		b.back = 0
+		b.len = 0
+		return s
+	}
+
+	winLen := len(b.window)
+	s := make([]T, n)
+	// The n newest items occupy tail-relative positions [len-n, len). Visit
+	// them in oldest-to-newest order so the returned slice has that order.
+	base := b.len - n
+	var zero T
+	for i := 0; i < n; i++ {
+		idx := (b.back + base + i) % winLen
+		s[i] = b.window[idx]
+		b.window[idx] = zero
+	}
+	b.len -= n
+	return s
+}
+
+// PopBack removes and returns the oldest live item, advancing [Buf.Offset]
+// by one. Returns the zero value of T when the tail is empty.
+//
+// See also: [Buf.DropBack].
+func (b *Buf[T]) PopBack() T {
+	if b.len == 0 {
+		var zero T
+		return zero
+	}
+	item := b.window[b.back]
+	var zero T
+	b.window[b.back] = zero
+	b.back = (b.back + 1) % len(b.window)
+	b.len--
+	b.offset++
+	return item
+}
+
+// PopBackN removes and returns up to n oldest items, in oldest-to-newest
+// order, advancing [Buf.Offset] by the number actually removed. n <= 0
+// returns an empty slice; n >= [Buf.Len] empties the tail and returns all
+// items.
+//
+// The returned slice is freshly allocated.
+//
+// Cleanup (B4): the prior implementation forked on b.front > b.back; both
+// branches were textually identical.
+func (b *Buf[T]) PopBackN(n int) []T {
+	if b.len == 0 || n < 1 {
+		return []T{}
+	}
+	if n >= b.len {
+		s := b.tailNewSlice()
+		// Clear bumps offset by the live count, which matches the semantics
+		// of popping every item from the back.
 		b.Clear()
 		return s
 	}
 
-	b.len -= n
-
-	if b.front > b.back {
-		s := make([]T, n)
-		for i := n - 1; i >= 0; i-- {
-			s[i] = b.window[b.front]
-			b.window[b.front] = b.zero
-			b.front = (b.front - 1 + len(b.window)) % len(b.window)
-		}
-		return s
-	}
-
+	winLen := len(b.window)
 	s := make([]T, n)
-	for i := n - 1; i >= 0; i-- {
-		s[i] = b.window[b.front]
-		b.window[b.front] = b.zero
-		b.front = (b.front - 1 + len(b.window)) % len(b.window)
+	var zero T
+	for i := 0; i < n; i++ {
+		s[i] = b.window[b.back]
+		b.window[b.back] = zero
+		b.back = (b.back + 1) % winLen
 	}
+	b.len -= n
+	b.offset += n
 	return s
 }
 
-// Apply applies fn to each item in the tail window, in oldest-to-newest order,
-// mutating the items in place. If Buf is empty, fn is not invoked. The buffer
-// is returned for chaining.
+// DropBack removes the oldest live item, advancing [Buf.Offset] by one. It
+// is a no-op when the tail is empty.
 //
-//	buf := tailbuf.New[string](3)
-//	buf.WriteAll("a", "b  ", "   c  ")
-//	buf.Apply(strings.TrimSpace).Apply(strings.ToUpper)
-//	fmt.Println(buf.Tail())
-//	// Output: [A B C]
-//
-// Using Apply is cheaper than getting the slice via [Buf.Tail] and applying fn
-// manually, as it avoids the possible allocation of a new slice by Buf.Tail.
-//
-// The behavior of Apply is undefined if the buffer is modified during
-// execution.
-//
-// For more control, or to handle errors, use [Buf.Do].
-func (b *Buf[T]) Apply(fn func(item T) T) *Buf[T] {
+// See also: [Buf.PopBack].
+func (b *Buf[T]) DropBack() {
 	if b.len == 0 {
-		return b
+		return
+	}
+	var zero T
+	b.window[b.back] = zero
+	b.back = (b.back + 1) % len(b.window)
+	b.len--
+	b.offset++
+}
+
+// DropBackN removes up to n oldest items, advancing [Buf.Offset] by the
+// number actually removed. n <= 0 is a no-op; n >= [Buf.Len] empties the
+// tail.
+//
+// Cleanup (B4): the prior implementation forked on b.front > b.back; both
+// branches were textually identical.
+func (b *Buf[T]) DropBackN(n int) {
+	if b.len == 0 || n < 1 {
+		return
+	}
+	if n >= b.len {
+		b.Clear()
+		return
 	}
 
-	if b.front > b.back {
-		for i := b.back; i <= b.front; i++ {
-			b.window[i] = fn(b.window[i])
-		}
-		return b
+	winLen := len(b.window)
+	var zero T
+	for i := 0; i < n; i++ {
+		b.window[b.back] = zero
+		b.back = (b.back + 1) % winLen
 	}
+	b.len -= n
+	b.offset += n
+}
 
-	for i := b.back; i < len(b.window); i++ {
-		b.window[i] = fn(b.window[i])
-	}
-
-	for i := 0; i <= b.front; i++ {
-		b.window[i] = fn(b.window[i])
+// Apply replaces each item in the tail window with fn(item), in
+// oldest-to-newest order. fn is invoked exactly [Buf.Len] times. Returns b
+// for chaining.
+//
+// Apply is cheaper than the equivalent loop over [Buf.Tail] (which may
+// allocate when the live items wrap).
+//
+// Behavior is undefined if fn modifies b.
+//
+// Bug A1 fix: the prior implementation forked on b.front > b.back. The
+// else-branch assumed front < back (a true wrap with len > 1) and iterated
+// over [back, cap) and [0, front+1]. When front == back (always the case
+// when len == 1, sometimes after pops), the else-branch ran fn on every
+// dead position in window and applied fn to the single live item twice.
+// Idempotent fns hid the bug; non-idempotent ones did not. The fix uses
+// modular indexing over exactly len iterations.
+func (b *Buf[T]) Apply(fn func(item T) T) *Buf[T] {
+	winLen := len(b.window)
+	for i := 0; i < b.len; i++ {
+		idx := (b.back + i) % winLen
+		b.window[idx] = fn(b.window[idx])
 	}
 	return b
 }
 
-// Do applies fn to each item in the tail window, in oldest-to-newest order,
-// replacing each item with the value returned by successful invocation of fn.
-// If fn returns an error, the item is not replaced. Execution is halted if any
-// invocation of fn returns an error, and that error is returned to the caller.
-// Thus a partial application of fn may occur.
+// Do replaces each item in the tail window with the value returned by fn,
+// halting (and returning the error) if fn returns one. fn is invoked at most
+// [Buf.Len] times, in oldest-to-newest order.
 //
-// If Buf is empty, fn is not invoked.
+// fn receives the item, the tail-relative index (0..Len-1), and the value of
+// [Buf.Offset] at iteration start. The nominal index of the item is the sum
+// of the latter two arguments.
 //
-// The index arg to fn is the index of the item in the tail window. The
-// tailOffset arg is the offset of the first item in the tail window vs the
-// nominal buffer. That is to say, it's the value of [Buf.Offset].
-// You can use these values to calculate the nominal index of the item:
+// The context is passed through to fn but is not checked between calls;
+// check it inside fn if cancellation is needed.
 //
-//	nominalIndex := index + tailOffset
+// Behavior is undefined if fn modifies b.
 //
-// The context is not checked for cancellation between invocations of fn. If you
-// need to check for cancellation, do so inside fn.
+// Bug A1 fix: same iteration bug as [Buf.Apply], same fix.
 //
-// The behavior of Do is undefined if the buffer is modified during execution.
+// Argument-order fix: the prior implementation passed (item, physicalIndex,
+// tailRelativeIndex) to fn, but the documentation described
+// (item, tailRelativeIndex, tailOffset). Callers writing to the documented
+// contract were reading both arguments wrong. The values now match the
+// documented contract.
 func (b *Buf[T]) Do(ctx context.Context, fn func(ctx context.Context, item T, index, tailOffset int) (T, error)) error {
 	if b.len == 0 {
 		return nil
 	}
-
 	if ctx == nil {
 		ctx = context.Background()
 	}
-
-	var v T
-	var err error
-
-	if b.front > b.back {
-		for i := b.back; i <= b.front; i++ {
-			v, err = fn(ctx, b.window[i], i, i-b.back)
-			if err != nil {
-				return err
-			}
-			b.window[i] = v
-		}
-		return nil
-	}
-
-	for i := b.back; i < len(b.window); i++ {
-		v, err = fn(ctx, b.window[i], i, i-b.back)
+	winLen := len(b.window)
+	for i := 0; i < b.len; i++ {
+		idx := (b.back + i) % winLen
+		v, err := fn(ctx, b.window[idx], i, b.offset)
 		if err != nil {
 			return err
 		}
-		b.window[i] = v
+		b.window[idx] = v
 	}
-
-	for i := 0; i <= b.front; i++ {
-		v, err = fn(ctx, b.window[i], i, i-b.back)
-		if err != nil {
-			return err
-		}
-		b.window[i] = v
-	}
-
 	return nil
 }
 
-// SliceNominal is a convenience function that returns a fresh slice into the
-// nominal buffer, using the standard [inclusive:exclusive] slicing mechanics.
+// SliceNominal returns a freshly-allocated slice of items whose nominal
+// indices fall in the half-open range [start, end). Nominal indices outside
+// the current tail are clipped silently.
 //
-// Boundary checking is relaxed. If the buffer is empty, the returned slice is
-// empty. Otherwise, if the requested range is completely outside the bounds of
-// the tail window, the returned slice is empty; if the range overlaps with the
-// tail window, the returned slice contains the overlapping items. If strict
-// boundary checking is important to you, use [Buf.InBounds] to check the start
-// and end indices.
+// Panics if end < start.
 //
-// SliceNominal is approximately functionally equivalent to reslicing the result
-// of [Buf.Tail], but it may avoid wasteful copying (and has relaxed bounds
-// checking).
+// SliceNominal is a thin wrapper over [SliceTail]: it translates nominal
+// coordinates to tail-relative coordinates by subtracting [Buf.Offset], then
+// delegates.
 //
-//	buf := tailbuf.New[int](3).WriteAll(1, 2, 3)
-//	a := buf.Tail()[0:2]
-//	b := buf.SliceNominal(0, 2)
-//	assert.Equal(t, a, b)
-//
-// If start < 0, zero is used. SliceNominal panics if end is less than start.
+// Bug A4 fix: the prior implementation could panic with
+// "slice bounds out of range" when the nominal range fell entirely past the
+// end of a wrapped tail (because the underlying SliceTail did not handle
+// over-large indices).
 func SliceNominal[T any](b *Buf[T], start, end int) []T {
-	offset := b.Offset()
-	start -= offset
-	if start < 0 {
-		start = 0
-	}
-	end -= offset
-	if end <= start {
-		return make([]T, 0)
+	if end < start {
+		panic("tailbuf: end must be >= start")
 	}
 
-	return SliceTail(b, start, end)
+	// Translate nominal coordinates to tail-relative ones. Clamp the lower
+	// bound to 0 (anything earlier was already evicted), and let SliceTail
+	// clamp the upper bound to b.len.
+	tailStart := start - b.offset
+	if tailStart < 0 {
+		tailStart = 0
+	}
+	tailEnd := end - b.offset
+	if tailEnd <= tailStart {
+		return []T{}
+	}
+	return SliceTail(b, tailStart, tailEnd)
 }
 
-// SliceTail returns a slice of the tail window, using the standard
-// [inclusive:exclusive] slicing mechanics, but with permissive bounds checking.
-// The slice is freshly allocated, so the caller is free to mutate it.
+// SliceTail returns a freshly-allocated slice of the items at tail-relative
+// half-open positions [start, end). start counts from the oldest live item
+// (i.e. position 0 is [Buf.Back]). Positions past the live tail are clipped
+// silently. The returned slice never shares storage with the buffer.
 //
-// A call to SliceTail is equivalent to reslicing the result of [Buf.Tail], but
-// it may avoid unnecessary copying, depending on the state of Buf.
+// Panics if start < 0 or end < start.
 //
-//	buf := tailbuf.New[int](3).WriteAll(1, 2, 3)
-//	a := buf.Tail()[0:2]
-//	b := buf.SliceTail(0, 2)
-//	fmt.Println("a:", a, "b:", b)
-//	// Output: a: [1 2] b: [1 2]
-//
-// If Buf is empty, the returned slice is empty. Otherwise, if the requested
-// range is completely outside the bounds of the tail window, the returned slice
-// is empty; if the range overlaps with the tail window, the returned slice
-// contains the overlapping items. If strict boundary checking is important, use
-// [Buf.InBounds] to check the start and end indices.
-//
-// SliceTail panics if start is negative or end is less than start.
-//
-// See also: [SliceNominal], [Buf.Tail], [Buf.Bounds], [Buf.InBounds].
+// Bug A2 / A3 / A4 fix: the prior implementation indexed the simple-case
+// branch as window[start:end], which was correct only when b.back happened
+// to be 0; it special-cased b.front == b.back with a hard-coded
+// window[0] read that returned the wrong value when the single item was
+// elsewhere; and it could panic on out-of-range indices against a wrapped
+// tail. The new implementation translates tail-relative positions to
+// physical ones with the same modular formula used by [Buf.Tail],
+// [Buf.Apply], etc.
 func SliceTail[T any](b *Buf[T], start, end int) []T {
-	switch {
-	case start < 0:
-		panic("start must be >= 0")
-	case end < start:
-		panic("end must be >= start")
-	case len(b.window) == 0, end == start, b.written == 0, start >= b.written:
-		return make([]T, 0)
-	case b.written == 1, b.front == b.back:
-		// Special case: the buffer has only one item.
-		if start == 0 && end >= 1 {
-			return []T{b.window[0]}
-		}
-		return make([]T, 0)
-	case b.front > b.back:
-		if end > b.written {
-			end = b.written
-		}
-		if end > len(b.window) {
-			end = len(b.window)
-		}
-		s := make([]T, 0, end-start)
-		return append(s, b.window[start:end]...)
-	default: // b.back > b.front
-		if end >= b.written {
-			end = b.written - 1
-		}
-		if end > len(b.window) {
-			end = len(b.window)
-		}
-		s := make([]T, 0, end-start)
-		s = append(s, b.window[b.back+start:]...)
-		frontIndex := b.front + end - len(b.window) + 1
-
-		return append(s, b.window[:frontIndex]...)
+	if start < 0 {
+		panic("tailbuf: start must be >= 0")
 	}
+	if end < start {
+		panic("tailbuf: end must be >= start")
+	}
+
+	if b.len == 0 {
+		return []T{}
+	}
+	if start > b.len {
+		start = b.len
+	}
+	if end > b.len {
+		end = b.len
+	}
+	n := end - start
+	if n == 0 {
+		return []T{}
+	}
+
+	winLen := len(b.window)
+	s := make([]T, n)
+	for i := 0; i < n; i++ {
+		s[i] = b.window[(b.back+start+i)%winLen]
+	}
+	return s
 }
