@@ -1478,6 +1478,32 @@ func TestDo_ErrorOnFirstIteration(t *testing.T) {
 		"no items must be mutated when fn returns an error at index 0")
 }
 
+// TestZeroValue_vs_NewZero_NilObservability pins the package contract
+// that the internal nil-vs-empty representation of the window (nil for
+// the zero-value Buf, non-nil for New(0)) is NOT observable through any
+// public method. In particular, Tail() on an empty buffer must return a
+// non-nil empty slice regardless of how the Buf was constructed.
+func TestZeroValue_vs_NewZero_NilObservability(t *testing.T) {
+	var zero tailbuf.Buf[int]
+	new0 := tailbuf.New[int](0)
+
+	require.NotNil(t, zero.Tail(), "zero-value Buf.Tail() must not be nil")
+	require.NotNil(t, new0.Tail(), "New(0) Buf.Tail() must not be nil")
+	require.Empty(t, zero.Tail())
+	require.Empty(t, new0.Tail())
+
+	// All the other public-API readers should also report identical state
+	// between the two construction paths.
+	require.Equal(t, zero.Cap(), new0.Cap())
+	require.Equal(t, zero.Len(), new0.Len())
+	require.Equal(t, zero.Written(), new0.Written())
+	require.Equal(t, zero.Offset(), new0.Offset())
+	zStart, zEnd := zero.Bounds()
+	nStart, nEnd := new0.Bounds()
+	require.Equal(t, zStart, nStart)
+	require.Equal(t, zEnd, nEnd)
+}
+
 // TestWriteAll_EmptyVarargsIsNoOp pins that WriteAll with zero arguments
 // does not touch state, but does return the receiver for chaining.
 func TestWriteAll_EmptyVarargsIsNoOp(t *testing.T) {
