@@ -1504,6 +1504,41 @@ func TestZeroValue_vs_NewZero_NilObservability(t *testing.T) {
 	require.Equal(t, zEnd, nEnd)
 }
 
+// TestZeroCap_OffsetTracksWritten pins the contract that, for a
+// zero-capacity buffer, every Write/WriteAll advances Offset in lockstep
+// with Written. This keeps the invariant Offset()+Len() == Written()
+// intact (equality holds since no PopFront can run on a cap=0 buffer)
+// and is the natural consequence of treating cap=0 writes as immediate
+// eviction-on-write.
+func TestZeroCap_OffsetTracksWritten(t *testing.T) {
+	buf := tailbuf.New[int](0)
+	require.Equal(t, 0, buf.Offset())
+	require.Equal(t, 0, buf.Written())
+
+	buf.Write(1)
+	require.Equal(t, 1, buf.Offset())
+	require.Equal(t, 1, buf.Written())
+
+	buf.WriteAll(2, 3, 4)
+	require.Equal(t, 4, buf.Offset())
+	require.Equal(t, 4, buf.Written())
+
+	// Bounds is the empty range at the current position.
+	start, end := buf.Bounds()
+	require.Equal(t, 4, start)
+	require.Equal(t, 4, end)
+	require.Equal(t, 0, buf.Len())
+
+	// Invariant: Offset()+Len() == Written() when no PopFront has run.
+	require.Equal(t, buf.Written(), buf.Offset()+buf.Len())
+
+	// And the zero value of Buf must behave identically.
+	var zero tailbuf.Buf[int]
+	zero.Write(10).WriteAll(20, 30)
+	require.Equal(t, 3, zero.Offset())
+	require.Equal(t, 3, zero.Written())
+}
+
 // TestWriteAll_EmptyVarargsIsNoOp pins that WriteAll with zero arguments
 // does not touch state, but does return the receiver for chaining.
 func TestWriteAll_EmptyVarargsIsNoOp(t *testing.T) {
