@@ -260,6 +260,58 @@ func ExampleNew_zeroCapacity() {
 	// tail:    []
 }
 
+// ExampleBuf_Back shows the relationship between Back and the oldest item
+// in the tail, including the empty-buffer case.
+func ExampleBuf_Back() {
+	buf := tailbuf.New[int](3)
+	buf.WriteAll(10, 20, 30)
+	fmt.Println("back: ", buf.Back()) // oldest live item
+
+	// On an empty buffer Back returns the zero value of T rather than
+	// panicking.
+	empty := tailbuf.New[int](3)
+	fmt.Println("empty:", empty.Back())
+
+	// Output:
+	// back:  10
+	// empty: 0
+}
+
+// ExampleBuf_PopFrontN shows that PopFrontN removes the newest n items and
+// returns them in oldest-to-newest order — the LAST element of the
+// returned slice is the one that was at the front before the call.
+func ExampleBuf_PopFrontN() {
+	buf := tailbuf.New[string](5)
+	buf.WriteAll("a", "b", "c", "d", "e")
+
+	popped := buf.PopFrontN(2) // removes "d" and "e" (the two newest)
+	fmt.Println("popped:", popped)
+	fmt.Println("tail:  ", buf.Tail())
+	fmt.Println("offset:", buf.Offset()) // PopFrontN does NOT advance Offset
+
+	// Output:
+	// popped: [d e]
+	// tail:   [a b c]
+	// offset: 0
+}
+
+// ExampleBuf_PopBackN shows that PopBackN removes the oldest n items in
+// oldest-to-newest order and advances Offset by the number removed.
+func ExampleBuf_PopBackN() {
+	buf := tailbuf.New[string](5)
+	buf.WriteAll("a", "b", "c", "d", "e")
+
+	popped := buf.PopBackN(2) // removes "a" and "b" (the two oldest)
+	fmt.Println("popped:", popped)
+	fmt.Println("tail:  ", buf.Tail())
+	fmt.Println("offset:", buf.Offset()) // advanced by 2
+
+	// Output:
+	// popped: [a b]
+	// tail:   [c d e]
+	// offset: 2
+}
+
 func TestTail(t *testing.T) {
 	buf := tailbuf.New[rune](3)
 	gotLen := buf.Len()
@@ -1343,4 +1395,135 @@ func TestTail_AppendDoesNotCorruptBuffer(t *testing.T) {
 		_ = append(tail, 99)
 		require.Equal(t, []int{7, 0, 0}, tailbuf.InternalWindow(buf))
 	})
+}
+
+// TestReset_FromWrappedState verifies Reset fully zeroes the internal
+// window even when the live items wrap around the end of physical storage,
+// and that all metadata is truly reset. A regression in zeroTail's modular
+// loop that stopped at the physical boundary would leak stale references
+// and would not fail any other test.
+func TestReset_FromWrappedState(t *testing.T) {
+	buf := tailbuf.New[string](3)
+	buf.WriteAll("a", "b", "c", "d", "e") // window=[d,e,c], back=2, wrapped
+	require.Equal(t, 2, buf.Offset())
+	require.Equal(t, []string{"c", "d", "e"}, buf.Tail())
+
+	buf.Reset()
+	requireZeroInternalWindow(t, buf)
+	require.Equal(t, 0, buf.Len())
+	require.Equal(t, 0, buf.Offset())
+	require.Equal(t, 0, buf.Written())
+	require.Empty(t, buf.Tail())
+
+	// The buffer should behave as if freshly constructed.
+	buf.Write("x")
+	require.Equal(t, []string{"x"}, buf.Tail())
+	require.Equal(t, 1, buf.Written())
+	require.Equal(t, "x", tailbuf.InternalWindow(buf)[0])
+}
+
+// TestSliceTail_WrappedBufferClipEnd covers the joint case where the
+// buffer is physically wrapped AND the caller passes an end index past
+// the live range. The modular read loop and the upper-bound clip path
+// interact here; the existing TestBugA4 tests cover start past end, but
+// not this start-inside / end-past combination.
+func TestSliceTail_WrappedBufferClipEnd(t *testing.T) {
+	buf := tailbuf.New[int](3)
+	buf.WriteAll(1, 2, 3, 4, 5) // window=[4,5,3], back=2, wrapped
+	require.Equal(t, []int{3, 4, 5}, buf.Tail())
+
+	// Tail-relative positions [1, 100): end is clipped to 3, so [1, 3).
+	require.Equal(t, []int{4, 5}, tailbuf.SliceTail(buf, 1, 100))
+	// End exactly at len: full tail.
+	require.Equal(t, []int{3, 4, 5}, tailbuf.SliceTail(buf, 0, 3))
+	// Partial from the start.
+	require.Equal(t, []int{3, 4}, tailbuf.SliceTail(buf, 0, 2))
+	// start == end == len: empty.
+	require.Empty(t, tailbuf.SliceTail(buf, 3, 3))
+	require.Empty(t, tailbuf.SliceTail(buf, 3, 100))
+}
+
+// TestTail_ElementMutationVisibleViaPeek pins the documented aliasing
+// contract that in the no-wrap case, mutating an element of the slice
+// returned by Tail is visible through subsequent reads of the buffer.
+// The 3-index cap prevents append from corrupting the buffer, but
+// element-level writes are still observed.
+func TestTail_ElementMutationVisibleViaPeek(t *testing.T) {
+	buf := tailbuf.New[int](5).WriteAll(1, 2, 3) // no-wrap, back=0, len=3
+	tail := buf.Tail()
+	require.Equal(t, []int{1, 2, 3}, tail)
+
+	tail[0] = 99
+	tail[2] = 77
+	require.Equal(t, 99, buf.Peek(0), "element mutation through Tail() must be visible via Peek")
+	require.Equal(t, 77, buf.Peek(2))
+	require.Equal(t, []int{99, 2, 77}, buf.Tail())
+}
+
+// TestDo_ErrorOnFirstIteration covers the boundary where fn returns an
+// error at index 0: no items should have been mutated, and the error
+// propagates. Complements TestDo_ErrorHaltsAndPreservesPartialMutation
+// which errors at a non-zero index.
+func TestDo_ErrorOnFirstIteration(t *testing.T) {
+	buf := tailbuf.New[int](4).WriteAll(10, 20, 30)
+	before := append([]int(nil), buf.Tail()...)
+
+	sentinel := errors.New("stop at index 0")
+	err := buf.Do(context.Background(),
+		func(_ context.Context, item, _, _ int) (int, error) {
+			return item * -1, sentinel // returned value is ignored on error
+		})
+	require.ErrorIs(t, err, sentinel)
+	require.Equal(t, before, buf.Tail(),
+		"no items must be mutated when fn returns an error at index 0")
+}
+
+// TestWriteAll_EmptyVarargsIsNoOp pins that WriteAll with zero arguments
+// does not touch state, but does return the receiver for chaining.
+func TestWriteAll_EmptyVarargsIsNoOp(t *testing.T) {
+	buf := tailbuf.New[int](3).WriteAll(1, 2)
+	ret := buf.WriteAll()
+	require.Same(t, buf, ret, "WriteAll must return the receiver for chaining even with no items")
+	require.Equal(t, []int{1, 2}, buf.Tail())
+	require.Equal(t, 2, buf.Written())
+	require.Equal(t, 2, buf.Len())
+
+	// Also on an empty buffer and on a zero-cap buffer.
+	emptyBuf := tailbuf.New[int](3)
+	emptyBuf.WriteAll()
+	require.Equal(t, 0, emptyBuf.Len())
+	require.Equal(t, 0, emptyBuf.Written())
+
+	zeroCap := tailbuf.New[int](0)
+	zeroCap.WriteAll()
+	require.Equal(t, 0, zeroCap.Written())
+}
+
+// TestPeek_FrontBackConsistency pins that Peek at the boundary positions
+// agrees with Front and Back. A refactor that diverged one of the three
+// code paths would be caught by this.
+func TestPeek_FrontBackConsistency(t *testing.T) {
+	buf := tailbuf.New[int](4)
+	// Drive the buffer into a wrapped state with len == cap.
+	for i := 0; i < 6; i++ {
+		buf.Write(i * 10)
+	}
+	// Live tail: [20, 30, 40, 50].
+	require.Equal(t, buf.Peek(0), buf.Back(), "Peek(0) == Back()")
+	require.Equal(t, buf.Peek(buf.Len()-1), buf.Front(), "Peek(Len-1) == Front()")
+}
+
+// TestSlice_BoundaryAtLen covers the edge case where start == end == Len:
+// both Slice* helpers must return an empty slice without panicking.
+func TestSlice_BoundaryAtLen(t *testing.T) {
+	buf := tailbuf.New[int](3).WriteAll(1, 2, 3)
+
+	require.Empty(t, tailbuf.SliceTail(buf, 3, 3))
+	// Nominal index 3 equals offset+len (0+3) for a non-evicted buffer.
+	require.Empty(t, tailbuf.SliceNominal(buf, 3, 3))
+
+	// And again against a wrapped buffer where offset > 0.
+	buf.WriteAll(4, 5) // window=[4,5,3], offset=2, len=3
+	require.Empty(t, tailbuf.SliceTail(buf, 3, 3))
+	require.Empty(t, tailbuf.SliceNominal(buf, 5, 5))
 }
