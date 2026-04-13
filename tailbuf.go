@@ -31,7 +31,8 @@
 //	Cap()          == fixed at construction
 //	Len()          <= Cap()
 //	Offset()       <= Written()
-//	Offset()+Len() <= Written()  (equality holds if PopFront has never run)
+//	Offset()+Len() <= Written()  (equality holds if PopFront/PopFrontN have
+//	                               never removed an item)
 //
 // # Pop semantics
 //
@@ -142,11 +143,14 @@ import "context"
 //   - 0 <= len <= len(window)
 //   - When len > 0: back ∈ [0, len(window)) and points to the oldest live
 //     item; the newest live item is at (back + len - 1) mod len(window).
-//   - When len == 0: back is unspecified (callers must not depend on it).
-//   - offset is monotonically non-decreasing; bumped only by
-//     eviction-on-write, by Pop/Drop from the back, and by Clear.
-//   - written is monotonically non-decreasing; bumped only by Write and
-//     WriteAll (including writes silently dropped by a zero-capacity Buf).
+//   - When len == 0: back has no semantic meaning. Callers must not depend
+//     on its value; the implementation happens to pin it to 0 on every path
+//     that empties the buffer, but that is not part of the contract.
+//   - offset never decreases except across [Buf.Reset]; it is bumped only
+//     by eviction-on-write, by Pop/Drop from the back, and by [Buf.Clear].
+//   - written never decreases except across [Buf.Reset]; it is bumped only
+//     by [Buf.Write] and [Buf.WriteAll] (including writes silently dropped
+//     by a zero-capacity Buf).
 type Buf[T any] struct {
 	// window is the underlying circular storage. Its length is the buffer's
 	// capacity (see [Buf.Cap]). When capacity is 0, window has length 0: it
@@ -433,6 +437,13 @@ func (b *Buf[T]) Peek(n int) T {
 // invalidated by the next call that mutates the buffer (Write, Pop, Clear,
 // Reset, Apply, Do).
 //
+// Tail applies a full-slice expression to cap the returned slice's capacity
+// at its length. This means [append]-ing to the returned slice allocates a
+// fresh backing array rather than silently writing into the ring past the
+// live region, so callers cannot accidentally corrupt internal state.
+// (Pre-cap behavior: append would overwrite window slots that Buf still
+// considered free, breaking len / back / offset coherence.)
+//
 // When the live items wrap, Tail allocates a fresh slice; the returned
 // slice is independent of the buffer.
 //
@@ -447,14 +458,17 @@ func (b *Buf[T]) Peek(n int) T {
 // storage.
 func (b *Buf[T]) Tail() []T {
 	if b.len == 0 {
-		return b.window[:0]
+		// Cap at 0 so append cannot write into window[0].
+		return b.window[:0:0]
 	}
 	winLen := len(b.window)
 	front := (b.back + b.len - 1) % winLen
 	if b.back <= front {
-		// No wrap: live items occupy window[back .. front+1]. We can return
-		// a sub-slice of the underlying storage.
-		return b.window[b.back : front+1]
+		// No wrap: live items occupy window[back .. front+1]. Returning a
+		// sub-slice of the underlying storage with a 3-index full-slice
+		// expression pins cap == len, so append allocates fresh rather
+		// than clobbering window[front+1] and beyond.
+		return b.window[b.back : front+1 : front+1]
 	}
 	// Wrapped: the live items span window[back:cap] + window[0:front+1].
 	// We must allocate a fresh slice to present them contiguously.

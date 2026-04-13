@@ -1298,3 +1298,49 @@ func TestPopFrontWriteReuseNominalIndex_AfterEviction(t *testing.T) {
 	require.Equal(t, 5, end)
 	require.Equal(t, 6, buf.Written(), "Written counts every Write, including post-pop reuse")
 }
+
+// TestTail_AppendDoesNotCorruptBuffer pins the 3-index cap on the slice
+// returned by [Buf.Tail]. Before the cap was added, a caller doing
+// append(buf.Tail(), x) would silently write into the buffer's internal
+// window past the live region, breaking len/back/offset coherence. The cap
+// forces append to allocate instead.
+func TestTail_AppendDoesNotCorruptBuffer(t *testing.T) {
+	t.Run("no-wrap tail", func(t *testing.T) {
+		// cap=5, len=3, no wrap. Tail is window[0:3]; window[3] is free.
+		buf := tailbuf.New[int](5).WriteAll(1, 2, 3)
+		tail := buf.Tail()
+		require.Equal(t, 3, cap(tail),
+			"Tail must return a slice whose cap equals its len, to force append to allocate")
+
+		// append(tail, 99) must NOT write through to window[3]; if it did,
+		// a subsequent Write would see the dirty slot and produce wrong
+		// output. We verify both by inspecting InternalWindow and by
+		// continuing to use the buffer normally.
+		_ = append(tail, 99)
+		require.Equal(t, []int{1, 2, 3, 0, 0}, tailbuf.InternalWindow(buf),
+			"append to Tail() result must not touch internal storage")
+		buf.Write(4)
+		require.Equal(t, []int{1, 2, 3, 4}, buf.Tail())
+	})
+
+	t.Run("empty tail", func(t *testing.T) {
+		buf := tailbuf.New[int](3)
+		tail := buf.Tail()
+		require.Empty(t, tail)
+		require.Equal(t, 0, cap(tail), "empty Tail must have cap 0")
+
+		_ = append(tail, 99)
+		require.Equal(t, []int{0, 0, 0}, tailbuf.InternalWindow(buf))
+	})
+
+	t.Run("single-item tail", func(t *testing.T) {
+		// cap=3, len=1 at index 0.
+		buf := tailbuf.New[int](3).WriteAll(7)
+		tail := buf.Tail()
+		require.Equal(t, []int{7}, tail)
+		require.Equal(t, 1, cap(tail))
+
+		_ = append(tail, 99)
+		require.Equal(t, []int{7, 0, 0}, tailbuf.InternalWindow(buf))
+	})
+}
