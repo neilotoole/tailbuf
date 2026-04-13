@@ -49,10 +49,21 @@ func main() {
 }
 ```
 
-Note that `Buf.Tail` returns a slice into the buffer's internal storage, so it's
-only valid until the next write operation. If you need to retain the tail slice,
-you should copy the returned slice, or instead use [`tailbuf.SliceTail`](https://pkg.go.dev/github.com/neilotoole/tailbuf#SliceTail), which
-always returns a freshly-allocated slice.
+When the live items do not wrap around the internal ring, `Buf.Tail` returns a
+slice that aliases the buffer's storage — valid only until the next mutation
+(write, pop, drop, clear, reset, `Apply`, or `Do`). When the items do wrap,
+`Buf.Tail` allocates a fresh slice.
+
+The slice returned by `Buf.Tail` is always capped at its length, so
+`append`-ing to it allocates a new backing array rather than silently
+overwriting the buffer's internal storage. Mutating individual elements
+through the slice, on the other hand, does reach into the buffer (in the
+no-wrap case) and is visible on subsequent reads.
+
+If you want a stable snapshot regardless of wrap or future mutations, use
+[`tailbuf.SliceTail`](https://pkg.go.dev/github.com/neilotoole/tailbuf#SliceTail) or
+[`tailbuf.SliceNominal`](https://pkg.go.dev/github.com/neilotoole/tailbuf#SliceNominal);
+both always return a freshly-allocated slice.
 
 There are various functions for popping, dropping, or peeking into the tail buffer.
 
@@ -95,6 +106,24 @@ There are also basic methods for interacting with the buffer:
 ```
 
 
+Items in the tail are addressed by *nominal index* — the position of each
+item in the full stream of writes, regardless of which ones have since been
+evicted. [`Buf.Bounds`](https://pkg.go.dev/github.com/neilotoole/tailbuf#Buf.Bounds)
+returns the half-open nominal range currently retained;
+[`Buf.InBounds`](https://pkg.go.dev/github.com/neilotoole/tailbuf#Buf.InBounds)
+reports whether a given nominal index is still alive.
+
+```go
+  buf := tailbuf.New[string](3)
+  buf.WriteAll("a", "b", "c", "d", "e")  // "a" and "b" have been evicted
+
+  start, end := buf.Bounds()
+  fmt.Println(start, end)              // 2 5
+  fmt.Println(buf.InBounds(1))         // false (evicted)
+  fmt.Println(buf.InBounds(3))         // true  ("d")
+  fmt.Println(buf.Offset())            // 2 (items dropped from the back)
+```
+
 And then there's the [`Apply`](https://pkg.go.dev/github.com/neilotoole/tailbuf#Buf.Apply) method, which applies a func to each element in the buffer,
 and also its bigger brother [`Do`](https://pkg.go.dev/github.com/neilotoole/tailbuf#Buf.Do), which does the same thing, but with context and
 error awareness.
@@ -106,5 +135,9 @@ error awareness.
   fmt.Println(buf.Tail()) // [DID KUBLA KHAN]
 ```
 
+The zero value of `tailbuf.Buf[T]` is a usable empty zero-capacity buffer —
+it silently drops items while still incrementing `Written`. Call
+[`tailbuf.New`](https://pkg.go.dev/github.com/neilotoole/tailbuf#New) to
+specify a non-zero capacity.
 
 See the [package reference](https://pkg.go.dev/github.com/neilotoole/tailbuf) for more details.
