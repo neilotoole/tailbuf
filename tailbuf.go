@@ -61,10 +61,13 @@
 //
 // # Concurrency
 //
-// [Buf] is not safe for concurrent use. All public methods, including read
-// methods like [Buf.Tail] and [Buf.Peek], may write to internal state or
-// return aliased storage; callers that share a [Buf] across goroutines must
-// provide their own synchronization.
+// [Buf] is not safe for concurrent use. Mutating methods change buffer state,
+// and read methods are not safe to use concurrently with those mutations.
+// In addition, [Buf.Tail] may return a slice aliasing the internal window,
+// so callers must not read or write that slice concurrently with any
+// [Buf] operation without their own synchronization. Share a [Buf] across
+// goroutines only under a lock you own, and treat the slice returned by
+// [Buf.Tail] as valid only until the next method call on the buffer.
 //
 // # Methods overview
 //
@@ -146,8 +149,9 @@ import "context"
 //     WriteAll (including writes silently dropped by a zero-capacity Buf).
 type Buf[T any] struct {
 	// window is the underlying circular storage. Its length is the buffer's
-	// capacity (see [Buf.Cap]). When capacity is 0, window is nil; the
-	// distinction between nil and a zero-length non-nil slice is not
+	// capacity (see [Buf.Cap]). When capacity is 0, window has length 0: it
+	// is nil for the zero-value [Buf], and a non-nil empty slice for one
+	// constructed by [New](0). That representation detail is not
 	// observable through the public API.
 	window []T
 
@@ -307,11 +311,16 @@ func (b *Buf[T]) Written() int {
 	return b.written
 }
 
-// Offset returns the nominal index of the oldest live item, or 0 if the tail
-// is empty. Equivalently, it is the number of items that have left the back
-// of the tail by either eviction-on-write or by [Buf.PopBack] / [Buf.DropBack]
-// / [Buf.PopBackN] / [Buf.DropBackN] / [Buf.Clear]. [Buf.PopFront] does NOT
-// advance Offset.
+// Offset returns the nominal index of the oldest live item. When the tail
+// is empty, Offset is still well-defined: it equals the start of the empty
+// [Buf.Bounds] range — equivalently, the nominal index that the next
+// retained item will occupy. Offset is 0 for a freshly-constructed buffer
+// but may be non-zero on an empty buffer after eviction-on-write,
+// [Buf.PopBack] / [Buf.DropBack] / [Buf.PopBackN] / [Buf.DropBackN], or
+// [Buf.Clear].
+//
+// Equivalently, Offset is the number of items that have left the back of
+// the tail by any of those routes. [Buf.PopFront] does NOT advance Offset.
 //
 // Bug A6 fix: Offset is now tracked explicitly. The previous implementation
 // derived it as max(0, written-cap), which gave wrong answers once any pop

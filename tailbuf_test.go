@@ -232,7 +232,7 @@ func ExampleSliceTail() {
 // Offset above 0.
 func ExampleSliceNominal() {
 	buf := tailbuf.New[int](3)
-	buf.WriteAll(1, 2, 3, 4, 5) // bounds become (2, 5)
+	buf.WriteAll(1, 2, 3, 4, 5)                  // bounds become (2, 5)
 	fmt.Println(tailbuf.SliceNominal(buf, 2, 5)) // entire live tail
 	fmt.Println(tailbuf.SliceNominal(buf, 1, 3)) // 1 is evicted; only nominal 2 remains
 	fmt.Println(tailbuf.SliceNominal(buf, 5, 9)) // entirely past end
@@ -1118,8 +1118,8 @@ func TestPopFrontWriteReuseNominalIndex(t *testing.T) {
 	require.Equal(t, "c", buf.Front())
 	require.Equal(t, 2, buf.Offset()+buf.Len()-1) // c at nominal 2
 
-	buf.PopFront()    // tail=[a,b], offset=0, len=2
-	buf.Write("c2")   // tail=[a,b,c2], offset=0, len=3; c2 at nominal 2
+	buf.PopFront()  // tail=[a,b], offset=0, len=2
+	buf.Write("c2") // tail=[a,b,c2], offset=0, len=3; c2 at nominal 2
 	require.Equal(t, "c2", buf.Front())
 	require.Equal(t, 2, buf.Offset()+buf.Len()-1)
 	start, end := buf.Bounds()
@@ -1132,8 +1132,8 @@ func TestPopFrontWriteReuseNominalIndex(t *testing.T) {
 func TestSliceTail_AfterClearAndRefill(t *testing.T) {
 	buf := tailbuf.New[int](3)
 	buf.WriteAll(1, 2, 3, 4, 5) // offset=2
-	buf.Clear()                  // offset=5
-	buf.WriteAll(10, 20)         // tail=[10,20] at nominals [5,6]
+	buf.Clear()                 // offset=5
+	buf.WriteAll(10, 20)        // tail=[10,20] at nominals [5,6]
 
 	require.Equal(t, []int{10, 20}, buf.Tail())
 	require.Equal(t, []int{10, 20}, tailbuf.SliceTail(buf, 0, 2))
@@ -1233,12 +1233,12 @@ func TestDo_ErrorHaltsAndPreservesPartialMutation(t *testing.T) {
 func TestApplyDo_WrappedLen3Plus(t *testing.T) {
 	// Both subtests share this initial state:
 	// cap=4, write 6 items: window=[5,6,3,4], back=2, len=4. Tail=[3,4,5,6].
-	const cap = 4
+	const bufCap = 4
 	all := []int{1, 2, 3, 4, 5, 6}
 	wantTail := []int{3, 4, 5, 6}
 
 	t.Run("Apply_visits_each_live_once_in_order", func(t *testing.T) {
-		buf := tailbuf.New[int](cap).WriteAll(all...)
+		buf := tailbuf.New[int](bufCap).WriteAll(all...)
 		require.Equal(t, wantTail, buf.Tail())
 
 		var seen []int
@@ -1251,7 +1251,7 @@ func TestApplyDo_WrappedLen3Plus(t *testing.T) {
 	})
 
 	t.Run("Do_visits_each_live_once_with_correct_indices", func(t *testing.T) {
-		buf := tailbuf.New[int](cap).WriteAll(all...)
+		buf := tailbuf.New[int](bufCap).WriteAll(all...)
 		require.Equal(t, wantTail, buf.Tail())
 
 		var seenItems, seenIndices, seenOffsets []int
