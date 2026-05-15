@@ -1769,6 +1769,48 @@ func TestInvariantWalker_ZeroCap(t *testing.T) {
 	check(&z, "zero value after PopBack")
 }
 
+// TestSliceNominal_NegativeStartClipsNotPanics pins the documented asymmetry
+// between SliceTail (panics on start<0) and SliceNominal (clips start<0
+// like any other below-Offset index). In nominal-index space, "below
+// Offset" is meaningful — it denotes an item that has already been
+// evicted — and negative is just the extreme of that. A future refactor
+// that "mirrors SliceTail" by adding a start<0 panic to SliceNominal
+// would break this contract; this test fails it loudly.
+func TestSliceNominal_NegativeStartClipsNotPanics(t *testing.T) {
+	buf := tailbuf.New[int](3).WriteAll(1, 2, 3, 4, 5) // Bounds = (2, 5); live tail [3,4,5]
+
+	// Negative start entirely below the live range: clipped to empty.
+	require.NotPanics(t, func() {
+		got := tailbuf.SliceNominal(buf, -10, 0)
+		require.Empty(t, got, "(-10, 0) is entirely below Offset; expected empty")
+	})
+
+	// Negative start, end inside the live range: clipped at Offset.
+	// Bounds=(2,5); requesting (-10, 4) reads nominal positions 2 and 3
+	// (items 3 and 4) — nominal 4 (item 5) is excluded by the half-open
+	// upper bound.
+	require.NotPanics(t, func() {
+		got := tailbuf.SliceNominal(buf, -10, 4)
+		require.Equal(t, []int{3, 4}, got, "negative start clipped to Offset; end is exclusive at nominal 4")
+	})
+
+	// Negative start, end past the live range: returns full live tail.
+	require.NotPanics(t, func() {
+		got := tailbuf.SliceNominal(buf, -10, 100)
+		require.Equal(t, []int{3, 4, 5}, got, "clipped to the full live range on both ends")
+	})
+
+	// Inverted range still panics, even with negatives.
+	require.PanicsWithValue(t, "tailbuf: end must be >= start", func() {
+		tailbuf.SliceNominal(buf, -1, -5)
+	})
+
+	// SliceTail's contrasting contract: tail-relative negative start panics.
+	require.PanicsWithValue(t, "tailbuf: start must be >= 0", func() {
+		tailbuf.SliceTail(buf, -1, 2)
+	})
+}
+
 // TestCanonicalEmpty_ViaEveryRoute pins the new invariant established by the
 // "Canonicalize empty-buffer state" change: every operation that empties
 // the buffer leaves it in the canonical empty state (oldestIdx == 0).

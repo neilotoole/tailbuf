@@ -69,15 +69,21 @@
 // out-of-range arguments:
 //
 //   - [Buf.Peek] panics on an out-of-range tail index (negative, or >= Len).
-//   - [SliceTail] and [SliceNominal] clip the upper bound silently:
-//     positions past the live tail are dropped, and a range that falls
-//     entirely outside the live tail returns an empty slice. Negative
-//     start values and inverted ranges (end < start) still panic.
+//   - [SliceTail] (tail-relative coordinates) panics on start < 0 and on
+//     end < start; positions past the live tail are clipped silently.
+//   - [SliceNominal] (nominal coordinates) panics only on end < start.
+//     start values below [Buf.Offset] — including negative ones — are
+//     clipped to "below the live range" rather than panicking, because
+//     in nominal-index space "below Offset" just means "already evicted":
+//     a meaningful, not erroneous, condition. positions past the live
+//     tail are clipped silently.
 //
 // Pick [Buf.Peek] when an out-of-range index is a programming error you want
 // to surface loudly; pick the slice helpers when you want a "give me
 // whatever falls inside this range" semantic that tolerates ranges that
-// have partly fallen off the buffer.
+// have partly fallen off the buffer. Prefer [SliceNominal] when working
+// in nominal coordinates and you want negative or below-Offset start
+// values to be treated as "already evicted" rather than as bugs.
 //
 // # Concurrency
 //
@@ -875,27 +881,33 @@ func (b *Buf[T]) Do(ctx context.Context, fn func(ctx context.Context, item T, in
 // SliceNominal returns a freshly-allocated slice of items whose nominal
 // indices fall in the half-open range [start, end). Nominal indices outside
 // the current tail are clipped silently: indices below [Buf.Offset] are
-// skipped, and indices at or beyond [Buf.Offset] + [Buf.Len] are skipped.
-// If the requested range and the live range do not overlap, the returned
-// slice is empty.
+// skipped (including negative ones — see below), and indices at or beyond
+// [Buf.Offset] + [Buf.Len] are skipped. If the requested range and the
+// live range do not overlap, the returned slice is empty.
 //
-// Panics if end < start.
+// Panics if end < start. Negative start values do NOT panic: a nominal
+// index below [Buf.Offset] denotes an item that has already been evicted
+// from the back, and negative is just the extreme case of that — clipped
+// to the start of the live range like any other below-Offset index. This
+// is the deliberate asymmetry between SliceNominal (nominal coordinates,
+// where "below Offset" is meaningful) and [SliceTail] (tail-relative
+// coordinates, where start < 0 has no meaning and panics).
 //
 // SliceNominal is a thin wrapper over [SliceTail]: it translates nominal
 // coordinates to tail-relative coordinates by subtracting [Buf.Offset], then
 // delegates. The returned slice never shares storage with the buffer.
 //
-// Out-of-range arguments clip silently rather than panic; see the "Bounds
-// policy" section of the package doc for the rationale and for the
-// contrast with [Buf.Peek].
+// See the "Bounds policy" section of the package doc for the broader
+// rationale and the contrast with [Buf.Peek].
 //
 // # Example
 //
 //	buf := tailbuf.New[int](3).WriteAll(1, 2, 3, 4, 5)
 //	// Bounds = (2, 5); the live tail is [3, 4, 5].
-//	tailbuf.SliceNominal(buf, 2, 5)   // [3 4 5]
-//	tailbuf.SliceNominal(buf, 1, 3)   // [3]      (1 is clipped)
-//	tailbuf.SliceNominal(buf, 5, 100) // []       (entirely past end)
+//	tailbuf.SliceNominal(buf, 2, 5)    // [3 4 5]
+//	tailbuf.SliceNominal(buf, 1, 3)    // [3]      (1 is below Offset, clipped)
+//	tailbuf.SliceNominal(buf, -10, 4)  // [3 4]   (negative start clipped to Offset)
+//	tailbuf.SliceNominal(buf, 5, 100)  // []       (entirely past end)
 func SliceNominal[T any](b *Buf[T], start, end int) []T {
 	if end < start {
 		panic("tailbuf: end must be >= start")
