@@ -913,17 +913,24 @@ func SliceNominal[T any](b *Buf[T], start, end int) []T {
 		panic("tailbuf: end must be >= start")
 	}
 
-	// Translate nominal coordinates to tail-relative ones. Clamp the lower
-	// bound to 0 (anything earlier was already evicted), and let SliceTail
-	// clamp the upper bound to b.len.
-	tailStart := start - b.offset
-	if tailStart < 0 {
-		tailStart = 0
-	}
-	tailEnd := end - b.offset
-	if tailEnd <= tailStart {
+	// Translate nominal coordinates to tail-relative ones. Clip both
+	// bounds against b.offset BEFORE subtracting, so the subtractions
+	// can't signed-overflow on inputs like math.MinInt — which would
+	// wrap to a large positive and silently violate the documented
+	// "below Offset is clipped" contract. b.offset is always >= 0, so
+	// after these clips, both differences are guaranteed non-negative
+	// and bounded.
+	if end <= b.offset {
+		// The entire requested range is below the live tail.
 		return []T{}
 	}
+	tailEnd := end - b.offset // end > b.offset >= 0, safe.
+	var tailStart int
+	if start > b.offset {
+		tailStart = start - b.offset // start > b.offset >= 0, safe.
+	}
+	// (start <= b.offset leaves tailStart at 0, the "below the live
+	// range" clip.)
 	return SliceTail(b, tailStart, tailEnd)
 }
 

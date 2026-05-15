@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -1808,6 +1809,25 @@ func TestSliceNominal_NegativeStartClipsNotPanics(t *testing.T) {
 	// SliceTail's contrasting contract: tail-relative negative start panics.
 	require.PanicsWithValue(t, "tailbuf: start must be >= 0", func() {
 		tailbuf.SliceTail(buf, -1, 2)
+	})
+
+	// Extreme negatives must not silent-overflow. A naive
+	// `start - b.offset` would wrap to a large positive on these inputs
+	// once Offset > 0; the contract says start <= Offset is just clipped
+	// to "start of live range" regardless of how far below.
+	t.Run("math.MinInt start does not overflow", func(t *testing.T) {
+		got := tailbuf.SliceNominal(buf, math.MinInt, 100)
+		require.Equal(t, []int{3, 4, 5}, got,
+			"math.MinInt start must clip to Offset, not overflow into empty")
+	})
+	t.Run("math.MinInt start with math.MaxInt end", func(t *testing.T) {
+		got := tailbuf.SliceNominal(buf, math.MinInt, math.MaxInt)
+		require.Equal(t, []int{3, 4, 5}, got,
+			"MinInt..MaxInt must read the full live range")
+	})
+	t.Run("math.MinInt end short-circuits to empty", func(t *testing.T) {
+		// end < start would panic, so test the boundary: end == start.
+		require.Equal(t, []int{}, tailbuf.SliceNominal(buf, math.MinInt, math.MinInt))
 	})
 }
 
