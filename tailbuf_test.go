@@ -1588,3 +1588,294 @@ func TestSlice_BoundaryAtLen(t *testing.T) {
 	require.Empty(t, tailbuf.SliceTail(buf, 3, 3))
 	require.Empty(t, tailbuf.SliceNominal(buf, 5, 5))
 }
+
+// TestApply_EmptyBuffer pins that Apply on a len==0 buffer is a no-op (fn
+// never invoked) and returns the receiver for chaining. A regression in
+// the loop guard would not be caught by the existing wrapped/no-wrap
+// tests, which all run against non-empty buffers.
+func TestApply_EmptyBuffer(t *testing.T) {
+	buf := tailbuf.New[int](5)
+	calls := 0
+	got := buf.Apply(func(n int) int {
+		calls++
+		return n + 1
+	})
+	require.Same(t, buf, got, "Apply must return the receiver for chaining")
+	require.Zero(t, calls, "fn must not be invoked when Len == 0")
+
+	// Also for the zero-value Buf, where window is nil.
+	var z tailbuf.Buf[int]
+	calls = 0
+	gotZ := z.Apply(func(n int) int {
+		calls++
+		return n
+	})
+	require.Same(t, &z, gotZ)
+	require.Zero(t, calls)
+}
+
+// TestDo_EmptyBuffer pins that Do on a len==0 buffer is a no-op: fn never
+// invoked, nil error returned. Complements TestApply_EmptyBuffer.
+func TestDo_EmptyBuffer(t *testing.T) {
+	buf := tailbuf.New[int](5)
+	calls := 0
+	err := buf.Do(context.Background(), func(_ context.Context, n, _, _ int) (int, error) {
+		calls++
+		return n, nil
+	})
+	require.NoError(t, err)
+	require.Zero(t, calls)
+
+	// Zero-value Buf.
+	var z tailbuf.Buf[int]
+	calls = 0
+	err = z.Do(context.Background(), func(_ context.Context, n, _, _ int) (int, error) {
+		calls++
+		return n, nil
+	})
+	require.NoError(t, err)
+	require.Zero(t, calls)
+}
+
+// TestApplyDo_WrappedLen2_ModularCrossing covers Apply and Do at len==2
+// where the iteration genuinely crosses the modular boundary. The
+// existing TestApplyDo_WrappedLen3Plus uses len=4 and TestBugA1 covers
+// len=2 with adjacent physical positions; neither hits a (oldestIdx + i)
+// % winLen wrap mid-iteration at len=2. Setup: cap=3, oldestIdx=2, len=2,
+// window=[4,_,3]. Iteration visits physical 2 then 0.
+func TestApplyDo_WrappedLen2_ModularCrossing(t *testing.T) {
+	mk := func() *tailbuf.Buf[int] {
+		// WriteAll(1,2,3,4,5) on cap=3 leaves window=[4,5,3] oldest=2 len=3.
+		// PopFront removes 5 (newest); window=[4,_,3] oldest=2 len=2.
+		// The two live items, oldest-to-newest, are 3 then 4. Iteration
+		// visits physical indices 2 (value 3) then 0 (value 4).
+		buf := tailbuf.New[int](3).WriteAll(1, 2, 3, 4, 5)
+		buf.PopFront()
+		return buf
+	}
+
+	t.Run("Apply visits oldest then newest exactly once each", func(t *testing.T) {
+		buf := mk()
+		var visits []int
+		buf.Apply(func(n int) int {
+			visits = append(visits, n)
+			return n * 10
+		})
+		require.Equal(t, []int{3, 4}, visits, "Apply must visit 3 (oldest) then 4 (newest)")
+		require.Equal(t, []int{30, 40}, buf.Tail(), "Tail must reflect transformed values")
+	})
+
+	t.Run("Do visits oldest then newest exactly once each", func(t *testing.T) {
+		buf := mk()
+		var visits []int
+		var indices []int
+		err := buf.Do(context.Background(), func(_ context.Context, n, index, _ int) (int, error) {
+			visits = append(visits, n)
+			indices = append(indices, index)
+			return n * 10, nil
+		})
+		require.NoError(t, err)
+		require.Equal(t, []int{3, 4}, visits)
+		require.Equal(t, []int{0, 1}, indices, "Do's index argument is tail-relative")
+		require.Equal(t, []int{30, 40}, buf.Tail())
+	})
+}
+
+// TestInvariantWalker drives a buffer through a varied sequence of Writes,
+// Pops, Drops, Clears, and Resets, calling tailbuf.CheckInvariants after
+// every operation. Catches any future state-tracking refactor that breaks
+// one of the documented invariants on Buf (e.g. offset+len > written).
+func TestInvariantWalker(t *testing.T) {
+	buf := tailbuf.New[int](4)
+	tailbuf.CheckInvariants(t, buf)
+
+	steps := []struct {
+		name string
+		do   func()
+	}{
+		{"Write 1", func() { buf.Write(1) }},
+		{"Write 2", func() { buf.Write(2) }},
+		{"WriteAll 3,4", func() { buf.WriteAll(3, 4) }},
+		{"Write 5 (eviction)", func() { buf.Write(5) }},
+		{"PopFront", func() { buf.PopFront() }},
+		{"Write 6", func() { buf.Write(6) }},
+		{"PopBack", func() { buf.PopBack() }},
+		{"DropBack", func() { buf.DropBack() }},
+		{"PopFrontN(2)", func() { buf.PopFrontN(2) }},
+		{"WriteAll 7,8,9,10,11", func() { buf.WriteAll(7, 8, 9, 10, 11) }},
+		{"PopBackN(2)", func() { buf.PopBackN(2) }},
+		{"DropBackN(99)", func() { buf.DropBackN(99) }},
+		{"WriteAll 12,13", func() { buf.WriteAll(12, 13) }},
+		{"Clear", func() { buf.Clear() }},
+		{"Write 14", func() { buf.Write(14) }},
+		{"Reset", func() { buf.Reset() }},
+		{"Write 15", func() { buf.Write(15) }},
+	}
+	for _, step := range steps {
+		step.do()
+		t.Run(step.name, func(t *testing.T) {
+			tailbuf.CheckInvariants(t, buf)
+		})
+	}
+}
+
+// TestInvariantWalker_ZeroCap walks the cap=0 buffer through writes, drops,
+// pops, and resets, validating the invariants at each step. In particular,
+// every Write/WriteAll must keep offset+len <= written; the documented
+// equality (when no PopFront has run) means offset == written here.
+func TestInvariantWalker_ZeroCap(t *testing.T) {
+	check := func(buf *tailbuf.Buf[int], label string) {
+		t.Run(label, func(t *testing.T) {
+			tailbuf.CheckInvariants(t, buf)
+			// Stronger invariant for cap=0 with no PopFront: equality.
+			require.Equal(t, buf.Written(), buf.Offset(), "cap=0: offset == written")
+		})
+	}
+
+	// New(0)
+	buf := tailbuf.New[int](0)
+	check(buf, "New(0) fresh")
+	buf.Write(1)
+	check(buf, "after Write")
+	buf.WriteAll(2, 3, 4)
+	check(buf, "after WriteAll(3)")
+	buf.Clear() // no-op on empty; offset unchanged
+	check(buf, "after Clear")
+	buf.Reset()
+	check(buf, "after Reset")
+	buf.Write(5)
+	check(buf, "after Write post-Reset")
+
+	// Zero value.
+	var z tailbuf.Buf[int]
+	check(&z, "zero value fresh")
+	z.Write(1)
+	check(&z, "zero value after Write")
+}
+
+// TestBoundsInBounds_AfterReset pins that Reset leaves Bounds and InBounds
+// in a coherent state for every relevant nominal index. The existing
+// TestReset_FromWrappedState checks Offset/Len/Written but never queries
+// Bounds or InBounds, so a regression that left offset stale through
+// Reset would not be caught.
+func TestBoundsInBounds_AfterReset(t *testing.T) {
+	// Drive the buffer into a wrapped state with non-zero offset so the
+	// pre-Reset Bounds value is genuinely different from (0, 0).
+	buf := tailbuf.New[int](3)
+	buf.WriteAll(1, 2, 3, 4, 5) // window=[4,5,3], oldest=2, len=3, offset=2
+
+	preStart, preEnd := buf.Bounds()
+	require.Equal(t, 2, preStart)
+	require.Equal(t, 5, preEnd)
+
+	buf.Reset()
+
+	start, end := buf.Bounds()
+	require.Equal(t, 0, start, "Reset must zero the start of Bounds")
+	require.Equal(t, 0, end, "Reset must zero the end of Bounds")
+
+	require.False(t, buf.InBounds(0), "InBounds must be false on an empty post-Reset buffer for nominal 0")
+	require.False(t, buf.InBounds(2), "...and for what used to be the live range")
+	require.False(t, buf.InBounds(5), "...and for what used to be just past the live range")
+	require.False(t, buf.InBounds(-1))
+
+	// A subsequent Write must produce a coherent post-Reset state.
+	buf.Write(99)
+	start, end = buf.Bounds()
+	require.Equal(t, 0, start)
+	require.Equal(t, 1, end)
+	require.True(t, buf.InBounds(0))
+	require.False(t, buf.InBounds(1))
+}
+
+// TestTail_MutationUnderWrapDoesNotCorruptBuffer pins the wrap-case half
+// of Tail's aliasing contract: when the live items wrap, Tail allocates
+// a fresh slice (so mutations to it are NOT visible through Peek). The
+// no-wrap case is already pinned by TestTail_ElementMutationVisibleViaPeek.
+func TestTail_MutationUnderWrapDoesNotCorruptBuffer(t *testing.T) {
+	buf := tailbuf.New[int](4)
+	// Force wrap: cap=4 plus two extra writes leaves oldestIdx=2, len=4,
+	// items spanning physical [2,3,0,1] = [3,4,5,6].
+	buf.WriteAll(1, 2, 3, 4, 5, 6)
+	require.Equal(t, []int{3, 4, 5, 6}, buf.Tail())
+
+	tail := buf.Tail()
+	// Mutate every position of the returned slice.
+	for i := range tail {
+		tail[i] = 999
+	}
+	// Peek must still report the original values; the buffer's internal
+	// storage must be untouched.
+	require.Equal(t, 3, buf.Peek(0))
+	require.Equal(t, 4, buf.Peek(1))
+	require.Equal(t, 5, buf.Peek(2))
+	require.Equal(t, 6, buf.Peek(3))
+	require.Equal(t, []int{3, 4, 5, 6}, buf.Tail())
+}
+
+// TestPeekFrontBack_AfterPopFront pins that the Peek(0)==Back(),
+// Peek(Len-1)==Front() consistency holds after a PopFront has shrunk the
+// live range. The existing TestPeek_FrontBackConsistency only tests
+// against a freshly-wrapped full buffer.
+func TestPeekFrontBack_AfterPopFront(t *testing.T) {
+	buf := tailbuf.New[int](4)
+	// Drive to wrap: cap=4, WriteAll(1..5) evicts 1; window=[5,2,3,4],
+	// oldest=1, len=4. Live tail oldest-to-newest is [2,3,4,5].
+	buf.WriteAll(1, 2, 3, 4, 5)
+	require.Equal(t, []int{2, 3, 4, 5}, buf.Tail())
+
+	// PopFront: newest (5) removed; oldest unchanged.
+	popped := buf.PopFront()
+	require.Equal(t, 5, popped)
+	require.Equal(t, 3, buf.Len())
+	require.Equal(t, []int{2, 3, 4}, buf.Tail())
+
+	require.Equal(t, buf.Back(), buf.Peek(0), "Peek(0) must equal Back after PopFront")
+	require.Equal(t, buf.Front(), buf.Peek(buf.Len()-1), "Peek(Len-1) must equal Front after PopFront")
+
+	// Specifically: live tail is [2,3,4]; Back=2, Front=4.
+	require.Equal(t, 2, buf.Back())
+	require.Equal(t, 4, buf.Front())
+}
+
+// TestChaining_ReturnsReceiver pins that the mutating methods documented
+// as "returns b for chaining" actually return the receiver. A future
+// refactor that swapped any of them to return a new *Buf (or nil) would
+// break chained call sites silently.
+func TestChaining_ReturnsReceiver(t *testing.T) {
+	buf := tailbuf.New[int](3)
+
+	require.Same(t, buf, buf.Write(1))
+	require.Same(t, buf, buf.WriteAll(2, 3))
+	require.Same(t, buf, buf.Apply(func(n int) int { return n }))
+	require.Same(t, buf, buf.Reset())
+	require.Same(t, buf, buf.Clear())
+}
+
+// TestPopBack_ThenWrite_Wrapped pins that Write after PopBack on a wrapped
+// buffer reuses the freed slot (no extra eviction). The A5 regression
+// covers Write-after-PopFront; this is the symmetric case that A5+A6
+// together imply but no single test exercises directly.
+func TestPopBack_ThenWrite_Wrapped(t *testing.T) {
+	buf := tailbuf.New[int](3).WriteAll(1, 2, 3, 4) // window=[4,2,3], oldest=1, len=3
+	require.Equal(t, []int{2, 3, 4}, buf.Tail())
+	require.Equal(t, 1, buf.Offset())
+
+	popped := buf.PopBack()
+	require.Equal(t, 2, popped)
+	require.Equal(t, []int{3, 4}, buf.Tail())
+	require.Equal(t, 2, buf.Offset(), "PopBack must advance Offset")
+
+	// The next Write must NOT evict — there's a free slot now.
+	buf.Write(5)
+	require.Equal(t, 3, buf.Len(), "len must grow back to 3")
+	require.Equal(t, []int{3, 4, 5}, buf.Tail())
+	require.Equal(t, 2, buf.Offset(), "Offset must NOT advance on a non-evicting Write")
+	require.Equal(t, 5, buf.Written())
+
+	// A second Write evicts because we're back at capacity.
+	buf.Write(6)
+	require.Equal(t, []int{4, 5, 6}, buf.Tail())
+	require.Equal(t, 3, buf.Offset(), "Offset must advance once on eviction")
+	require.Equal(t, 6, buf.Written())
+}
