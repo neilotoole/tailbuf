@@ -28,7 +28,8 @@ func TailNewSlice[T any](b *Buf[T]) []T {
 //   - 0 <= len <= cap
 //   - When len > 0: oldestIdx ∈ [0, cap)
 //   - When len == 0: oldestIdx == 0 (the canonical-empty invariant
-//     established by every code path that empties the buffer)
+//     established by every Pop/Drop/Clear/Reset path that can empty
+//     the buffer; grep for "oldestIdx = 0" to find the call sites)
 //   - offset >= 0 and written >= 0
 //   - offset + len <= written
 //
