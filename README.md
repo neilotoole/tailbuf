@@ -63,7 +63,12 @@ no-wrap case) and is visible on subsequent reads.
 If you want a stable snapshot regardless of wrap or future mutations, use
 [`tailbuf.SliceTail`](https://pkg.go.dev/github.com/neilotoole/tailbuf#SliceTail) or
 [`tailbuf.SliceNominal`](https://pkg.go.dev/github.com/neilotoole/tailbuf#SliceNominal);
-both always return a freshly-allocated slice.
+both always return a freshly-allocated slice. Out-of-range upper bounds are
+clipped silently rather than panicking — see the
+[Bounds policy](https://pkg.go.dev/github.com/neilotoole/tailbuf#hdr-Bounds_policy)
+section of the godoc for how this differs from `Buf.Peek` (which panics on
+out-of-range) and for the deliberate asymmetry around negative start
+values between `SliceTail` and `SliceNominal`.
 
 There are various functions for popping, dropping, or peeking into the tail buffer.
 

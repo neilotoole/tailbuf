@@ -1356,8 +1356,8 @@ func TestPopFrontWriteReuseNominalIndex_AfterEviction(t *testing.T) {
 // TestTail_AppendDoesNotCorruptBuffer pins the 3-index cap on the slice
 // returned by [Buf.Tail]. Before the cap was added, a caller doing
 // append(buf.Tail(), x) would silently write into the buffer's internal
-// window past the live region, breaking len/back/offset coherence. The cap
-// forces append to allocate instead.
+// window past the live region, breaking len/oldestIdx/offset coherence.
+// The cap forces append to allocate instead.
 func TestTail_AppendDoesNotCorruptBuffer(t *testing.T) {
 	t.Run("no-wrap tail", func(t *testing.T) {
 		// cap=5, len=3, no wrap. Tail is window[0:3]; window[3] is free.

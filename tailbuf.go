@@ -32,8 +32,8 @@
 //	Len()          <= Cap()
 //	Offset()       <= Written()
 //	Offset()+Len() <= Written()  (equality iff PopFront/PopFrontN has never
-//	                               removed an item since the most recent
-//	                               Reset)
+//	                               removed an item since construction or
+//	                               the most recent Reset)
 //
 // # Pop semantics
 //
@@ -68,7 +68,8 @@
 // The two slice helpers and the indexed read disagree deliberately on
 // out-of-range arguments:
 //
-//   - [Buf.Peek] panics on an out-of-range tail index (negative, or >= Len).
+//   - [Buf.Peek] panics on an out-of-range tail index (negative, >= Len,
+//     or any non-negative index when Len is 0).
 //   - [SliceTail] (tail-relative coordinates) panics on start < 0 and on
 //     end < start; positions past the live tail are clipped silently.
 //   - [SliceNominal] (nominal coordinates) panics only on end < start.
@@ -188,8 +189,8 @@ import "context"
 //     by [Buf.Write] and [Buf.WriteAll] (including writes silently dropped
 //     by a zero-capacity Buf).
 //   - offset + len <= written, with equality iff [Buf.PopFront] /
-//     [Buf.PopFrontN] has never removed an item since the most recent
-//     [Buf.Reset].
+//     [Buf.PopFrontN] has never removed an item since construction or
+//     the most recent [Buf.Reset].
 type Buf[T any] struct {
 	// window is the underlying circular storage. Its length is the buffer's
 	// capacity (see [Buf.Cap]). When capacity is 0, window has length 0: it
@@ -943,6 +944,12 @@ func SliceNominal[T any](b *Buf[T], start, end int) []T {
 // Panics if start < 0 or end < start. Out-of-range upper bounds clip
 // silently rather than panic; see the "Bounds policy" section of the
 // package doc for the rationale and for the contrast with [Buf.Peek].
+//
+// Note the deliberate asymmetry with [SliceNominal]: tail-relative
+// coordinates have no interpretation for start < 0 (nothing below
+// position 0 exists), so SliceTail panics; nominal coordinates DO have
+// meaning for start values below [Buf.Offset] (they refer to items that
+// have already been evicted), so SliceNominal clips instead of panicking.
 //
 // # Example
 //
