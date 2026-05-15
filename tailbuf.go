@@ -31,8 +31,9 @@
 //	Cap()          == fixed at construction
 //	Len()          <= Cap()
 //	Offset()       <= Written()
-//	Offset()+Len() <= Written()  (equality holds if PopFront/PopFrontN have
-//	                               never removed an item)
+//	Offset()+Len() <= Written()  (equality iff PopFront/PopFrontN has never
+//	                               removed an item since the most recent
+//	                               Reset)
 //
 // # Pop semantics
 //
@@ -54,12 +55,13 @@
 // # Slice aliasing
 //
 // [Buf.Tail] returns a slice that shares storage with the buffer's internal
-// window when (and only when) the live items are physically contiguous in
-// the window (i.e. they have not wrapped around). The returned slice is
-// invalidated by the next mutating call. If you need to retain the slice
-// past further mutations, copy it, or use [SliceTail] / [SliceNominal],
-// which never share storage with the buffer (and allocate a fresh backing
-// array for every non-empty result).
+// window when (and only when) the live items are non-empty and physically
+// contiguous in the window (i.e. they have not wrapped around). The
+// empty-buffer case returns a fresh non-aliasing []T{} regardless of
+// internal state. The returned slice is invalidated by the next mutating
+// call. If you need to retain the slice past further mutations, copy it,
+// or use [SliceTail] / [SliceNominal], which never share storage with the
+// buffer (and allocate a fresh backing array for every non-empty result).
 //
 // # Bounds policy
 //
@@ -67,8 +69,10 @@
 // out-of-range arguments:
 //
 //   - [Buf.Peek] panics on an out-of-range tail index (negative, or >= Len).
-//   - [SliceTail] and [SliceNominal] clip silently: positions past the live
-//     tail return an empty slice rather than panicking.
+//   - [SliceTail] and [SliceNominal] clip the upper bound silently:
+//     positions past the live tail are dropped, and a range that falls
+//     entirely outside the live tail returns an empty slice. Negative
+//     start values and inverted ranges (end < start) still panic.
 //
 // Pick [Buf.Peek] when an out-of-range index is a programming error you want
 // to surface loudly; pick the slice helpers when you want a "give me
@@ -105,11 +109,14 @@
 //
 //	Apply, Do
 //
-// Mutation (remove):
+// Mutation (selective remove):
 //
 //	PopFront, PopFrontN  — remove from the newest end (no Offset change)
 //	PopBack,  PopBackN   — remove from the oldest end (Offset advances)
 //	DropBack, DropBackN  — like PopBack/PopBackN but discard the result
+//
+// Mutation (bulk empty):
+//
 //	Clear                — empty the tail; preserve Written
 //	Reset                — empty the tail; reset Written and Offset
 package tailbuf
@@ -189,8 +196,8 @@ type Buf[T any] struct {
 	// Meaningful only when len > 0; otherwise its value is irrelevant to
 	// callers. The implementation canonicalizes it to 0 on every emptying
 	// path so internal state is deterministic and two empty buffers
-	// compare equal regardless of history; callers must not rely on this
-	// (see the type-level invariants block for the rationale).
+	// compare equal regardless of history; callers must not rely on
+	// this — future implementations may relax the canonicalization.
 	//
 	// Name choice: this is "the back of the tail" in the package's
 	// vocabulary, so [Buf.Back] returns window[oldestIdx]. Naming the
@@ -434,6 +441,10 @@ func (b *Buf[T]) Front() T {
 // Back returns the oldest live item, or the zero value of T when the tail is
 // empty. Back does not modify the buffer; see [Buf.PopBack] for the removing
 // variant.
+//
+// Same zero-value-safety reasoning as [Buf.Front]: empty-check uses
+// [Buf.Len] so a zero-value Buf (with a nil internal window) is never
+// indexed.
 func (b *Buf[T]) Back() T {
 	if b.len == 0 {
 		var zero T
@@ -768,13 +779,13 @@ func (b *Buf[T]) DropBackN(n int) {
 // transparently. Compared to a hand-rolled loop over [Buf.Tail]: Apply
 // skips the allocation that [Buf.Tail] must do when the live items wrap,
 // so Apply is meaningfully faster in that case. When the items do not
-// wrap, a direct loop over [Buf.Tail] is roughly twice as fast (at
-// cap=1024 with int items, the benchmarks show ≈ 340 ns vs ≈ 680 ns)
-// because the compiler inlines the loop body and avoids the per-iteration
-// modular indexing that Apply must perform. Apply is the natural choice
-// when you want correctness under wrap without having to think about it,
-// and when you don't need an index, an early exit, or an error result —
-// for those, use [Buf.Do].
+// wrap, a direct loop over [Buf.Tail] is roughly twice as fast (the
+// compiler inlines the loop body and avoids the per-iteration modular
+// indexing that Apply must perform; see the package benchmarks for
+// current absolute numbers). Apply is the natural choice when you want
+// correctness under wrap without having to think about it, and when you
+// don't need an index, an early exit, or an error result — for those,
+// use [Buf.Do].
 //
 // Behavior is undefined if fn modifies b (whether by writing, popping, or
 // otherwise).
@@ -830,11 +841,11 @@ func (b *Buf[T]) Apply(fn func(item T) T) *Buf[T] {
 //
 // # Example
 //
-//	err := buf.Do(ctx, func(ctx context.Context, item string, index, off int) (string, error) {
+//	err := buf.Do(ctx, func(ctx context.Context, item string, index, tailOffset int) (string, error) {
 //	    if err := ctx.Err(); err != nil {
 //	        return item, err
 //	    }
-//	    return fmt.Sprintf("%d: %s", index+off, item), nil
+//	    return fmt.Sprintf("%d: %s", index+tailOffset, item), nil
 //	})
 func (b *Buf[T]) Do(ctx context.Context, fn func(ctx context.Context, item T, index, tailOffset int) (T, error)) error {
 	if b.len == 0 {
