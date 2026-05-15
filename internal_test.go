@@ -18,6 +18,36 @@ func TailNewSlice[T any](b *Buf[T]) []T {
 	return b.tailNewSlice()
 }
 
+// CheckInvariants asserts the documented invariants on b at a public-method
+// boundary. Intended for test use: call after a sequence of public-API
+// operations to catch a refactor that introduces a state where the public
+// API returns wrong-but-internally-consistent answers.
+//
+// Asserted invariants (a subset of those documented on Buf):
+//
+//   - 0 <= len <= cap
+//   - When len > 0: oldestIdx ∈ [0, cap)
+//   - offset >= 0 and written >= 0
+//   - offset + len <= written
+//
+// The "equality holds iff PopFront has not run since the last Reset" rider
+// from the package doc is not asserted here — that fact depends on call
+// history that CheckInvariants cannot observe from local state alone.
+func CheckInvariants[T any](tb testing.TB, b *Buf[T]) {
+	tb.Helper()
+	winLen := len(b.window)
+	require.GreaterOrEqual(tb, b.len, 0, "len must be >= 0")
+	require.LessOrEqual(tb, b.len, winLen, "len (%d) must be <= cap (%d)", b.len, winLen)
+	if b.len > 0 {
+		require.GreaterOrEqual(tb, b.oldestIdx, 0, "oldestIdx must be >= 0 when len > 0")
+		require.Less(tb, b.oldestIdx, winLen, "oldestIdx (%d) must be < cap (%d) when len > 0", b.oldestIdx, winLen)
+	}
+	require.GreaterOrEqual(tb, b.offset, 0, "offset must be >= 0")
+	require.GreaterOrEqual(tb, b.written, 0, "written must be >= 0")
+	require.LessOrEqual(tb, b.offset+b.len, b.written,
+		"offset+len (%d) must be <= written (%d)", b.offset+b.len, b.written)
+}
+
 // RequireEqualInternalState asserts that a and b have the same internal
 // state: window contents (which implies same capacity), len, oldestIdx,
 // offset, and written. Two Bufs that compare equal here must produce
