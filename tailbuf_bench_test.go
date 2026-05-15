@@ -8,12 +8,14 @@ import (
 
 // Benchmarks in this file establish a baseline for the hot-path methods on
 // Buf. Each benchmark is self-contained, preloads the buffer before the
-// timer starts, and reports allocations so -benchmem output is automatic.
+// timer starts (except the zero-capacity case, which has nothing to
+// preload), and reports allocations so -benchmem output is automatic.
 //
-// Representative capacities (16 and 1024) are chosen to expose both cache-
-// friendly and cache-unfriendly regimes. The item type is `int` so the
-// cost of copying an item does not dominate; swap for a larger struct to
-// measure copy-dominated workloads.
+// The standard buffer capacity is 1024, large enough that fixed per-call
+// overhead does not dominate the measurement. WriteAll uses a 16-item
+// batch as its input — that 16 is a batch size, not a buffer capacity.
+// The item type is `int` so the cost of copying an item does not
+// dominate; swap for a larger struct to measure copy-dominated workloads.
 //
 // Read benchmarks store results into a package-level sink variable to
 // prevent the Go compiler from eliding the work via escape analysis and
@@ -27,9 +29,11 @@ var (
 )
 
 // BenchmarkWrite measures the steady-state eviction cost of [Buf.Write] on
-// a full buffer — the dominant path for long-running use.
+// a full buffer — the dominant path for long-running use. The buffer is
+// preloaded to capacity before the timer starts so the timed loop never
+// touches the cheaper grow-to-full path.
 func BenchmarkWrite(b *testing.B) {
-	buf := tailbuf.New[int](1024)
+	buf := tailbuf.New[int](1024).WriteAll(make([]int, 1024)...)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

@@ -442,8 +442,8 @@ func (b *Buf[T]) Peek(n int) T {
 // When the live items do not wrap around the internal window, the returned
 // slice shares storage with the buffer; mutating elements via that slice
 // also mutates the buffer's view of those items, and the slice is
-// invalidated by the next call that mutates the buffer (Write, Pop, Clear,
-// Reset, Apply, Do).
+// invalidated by any subsequent mutating call on the buffer — Write /
+// WriteAll, any Pop* or Drop* variant, Clear, Reset, Apply, or Do.
 //
 // Tail applies a full-slice expression to cap the returned slice's capacity
 // at its length. This means [append]-ing to the returned slice allocates a
