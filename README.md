@@ -73,8 +73,9 @@ values between `SliceTail` and `SliceNominal`.
 There are various functions for popping, dropping, or peeking into the tail
 buffer. `PopFront`/`PopFrontN` and `PopBack`/`PopBackN` remove and return
 items from the newest and oldest ends respectively; the corresponding
-`DropFront`/`DropFrontN`/`DropBack`/`DropBackN` family does the same without
-allocating a slice for the return value.
+`DropFront`/`DropFrontN`/`DropBack`/`DropBackN` family does the same but
+discards the result instead of returning it (saving a value copy in the
+singular variants and a slice allocation in the N variants).
 
 ```go
   buf := tailbuf.New[string](3)

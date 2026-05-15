@@ -32,9 +32,11 @@ func TailNewSlice[T any](b *Buf[T]) []T {
 //   - offset >= 0 and written >= 0
 //   - offset + len <= written
 //
-// The "equality holds iff PopFront has not run since the last Reset" rider
-// from the package doc is not asserted here — that fact depends on call
-// history that CheckInvariants cannot observe from local state alone.
+// The "equality holds iff none of PopFront / PopFrontN / DropFront /
+// DropFrontN has removed an item since construction or the most recent
+// Reset" rider from the package doc is not asserted here — that fact
+// depends on call history that CheckInvariants cannot observe from local
+// state alone.
 func CheckInvariants[T any](tb testing.TB, b *Buf[T]) {
 	tb.Helper()
 	winLen := len(b.window)

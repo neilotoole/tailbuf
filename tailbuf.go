@@ -31,7 +31,8 @@
 //	Cap()          == fixed at construction
 //	Len()          <= Cap()
 //	Offset()       <= Written()
-//	Offset()+Len() <= Written()  (equality iff PopFront/PopFrontN has never
+//	Offset()+Len() <= Written()  (equality iff none of PopFront /
+//	                               PopFrontN / DropFront / DropFrontN has
 //	                               removed an item since construction or
 //	                               the most recent Reset)
 //
@@ -41,16 +42,16 @@
 // remove the oldest live item(s). They advance [Buf.Offset] by the number
 // removed, exactly as eviction-on-write would.
 //
-// [Buf.PopFront] / [Buf.PopFrontN] remove the newest live item(s). They do
-// NOT advance [Buf.Offset]; the tail window simply shrinks from its newest
-// end.
+// [Buf.PopFront] / [Buf.PopFrontN] / [Buf.DropFront] / [Buf.DropFrontN]
+// remove the newest live item(s). They do NOT advance [Buf.Offset]; the
+// tail window simply shrinks from its newest end.
 //
-// One subtle consequence: after [Buf.PopFront], the next [Buf.Write] occupies
-// the nominal index that the popped item had. The buffer does not preserve
-// "holes" in nominal-index space; the live items always occupy a contiguous
-// nominal range. Mixing pops with writes is supported, but if your code
-// relies on a one-to-one mapping between writes and nominal indices, do not
-// call [Buf.PopFront].
+// One subtle consequence: after any of those calls, the next [Buf.Write]
+// occupies the nominal index that the popped/dropped item had. The buffer
+// does not preserve "holes" in nominal-index space; the live items always
+// occupy a contiguous nominal range. Mixing the front-end remove variants
+// with writes is supported, but if your code relies on a one-to-one
+// mapping between writes and nominal indices, do not call any of them.
 //
 // # Slice aliasing
 //
@@ -189,9 +190,9 @@ import "context"
 //   - written never decreases except across [Buf.Reset]; it is bumped only
 //     by [Buf.Write] and [Buf.WriteAll] (including writes silently dropped
 //     by a zero-capacity Buf).
-//   - offset + len <= written, with equality iff [Buf.PopFront] /
-//     [Buf.PopFrontN] has never removed an item since construction or
-//     the most recent [Buf.Reset].
+//   - offset + len <= written, with equality iff none of [Buf.PopFront] /
+//     [Buf.PopFrontN] / [Buf.DropFront] / [Buf.DropFrontN] has removed an
+//     item since construction or the most recent [Buf.Reset].
 type Buf[T any] struct {
 	// window is the underlying circular storage. Its length is the buffer's
 	// capacity (see [Buf.Cap]). When capacity is 0, window has length 0: it
@@ -647,7 +648,8 @@ func (b *Buf[T]) PopFront() T {
 //
 // PopFrontN does NOT change [Buf.Offset]; same caveat as [Buf.PopFront].
 //
-// See also: [Buf.DropFrontN] when the returned values are not needed.
+// See also: [Buf.PopFront] for the single-item variant; [Buf.DropFrontN]
+// when the returned values are not needed.
 func (b *Buf[T]) PopFrontN(n int) []T {
 	if b.len == 0 || n < 1 {
 		return []T{}
@@ -707,7 +709,8 @@ func (b *Buf[T]) PopBack() T {
 //
 // The returned slice is freshly allocated.
 //
-// See also: [Buf.DropBackN] when the returned value is not needed.
+// See also: [Buf.PopBack] for the single-item variant; [Buf.DropBackN]
+// when the returned values are not needed.
 func (b *Buf[T]) PopBackN(n int) []T {
 	if b.len == 0 || n < 1 {
 		return []T{}
@@ -741,7 +744,8 @@ func (b *Buf[T]) PopBackN(n int) []T {
 // Like PopFront, it does NOT advance [Buf.Offset]; the tail window simply
 // shrinks from its newest end.
 //
-// See also: [Buf.PopFront], [Buf.DropFrontN].
+// See also: [Buf.PopFront], [Buf.DropFrontN], [Buf.Front] for a
+// non-removing peek at the same item.
 func (b *Buf[T]) DropFront() {
 	if b.len == 0 {
 		return
