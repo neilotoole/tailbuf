@@ -872,7 +872,7 @@ func requireZeroInternalWindow[T any](tb testing.TB, buf *tailbuf.Buf[T]) {
 func TestBugA1_ApplyOverIteration(t *testing.T) {
 	t.Run("len=1_after_pops_at_non_zero_index", func(t *testing.T) {
 		buf := tailbuf.New[string](3)
-		buf.WriteAll("a", "b", "c", "d") // wrap: window=[d,b,c], back=1
+		buf.WriteAll("a", "b", "c", "d") // wrap: window=[d,b,c], oldestIdx=1
 		buf.PopFront()                   // remove d, len=2
 		buf.PopFront()                   // remove c, len=1, single item 'b' at window[1]
 
@@ -887,7 +887,7 @@ func TestBugA1_ApplyOverIteration(t *testing.T) {
 
 	t.Run("len=1_at_index_zero", func(t *testing.T) {
 		buf := tailbuf.New[string](3)
-		buf.WriteAll("a") // back=0, len=1, single item at window[0]
+		buf.WriteAll("a") // oldestIdx=0, len=1, single item at window[0]
 
 		calls := 0
 		buf.Apply(func(s string) string {
@@ -901,7 +901,7 @@ func TestBugA1_ApplyOverIteration(t *testing.T) {
 	t.Run("len=2_wrapped_calls_each_once", func(t *testing.T) {
 		// Sanity check: the multi-item wrap case still works correctly.
 		buf := tailbuf.New[int](3)
-		buf.WriteAll(1, 2, 3, 4) // window=[4,2,3], back=1
+		buf.WriteAll(1, 2, 3, 4) // window=[4,2,3], oldestIdx=1
 		buf.PopFront()           // remove 4, len=2
 
 		calls := 0
@@ -921,7 +921,7 @@ func TestBugA1_ApplyOverIteration(t *testing.T) {
 // the documented contract.
 func TestBugA1_DoArguments(t *testing.T) {
 	buf := tailbuf.New[int](3)
-	buf.WriteAll(10, 20, 30, 40) // window=[40,20,30], back=1, offset=1
+	buf.WriteAll(10, 20, 30, 40) // window=[40,20,30], oldestIdx=1, offset=1
 
 	type call struct {
 		item, index, tailOffset int
@@ -940,12 +940,13 @@ func TestBugA1_DoArguments(t *testing.T) {
 }
 
 // TestBugA2_SliceTailAfterPopBack covers the case where the live items do
-// not wrap but b.back > 0. The pre-fix SliceTail indexed window[start:end]
-// directly, which silently returned items from before the live region.
+// not wrap but b.oldestIdx > 0. The pre-fix SliceTail indexed
+// window[start:end] directly, which silently returned items from before
+// the live region.
 func TestBugA2_SliceTailAfterPopBack(t *testing.T) {
 	buf := tailbuf.New[int](5)
-	buf.WriteAll(1, 2, 3) // back=0, len=3
-	buf.PopBack()         // back=1, len=2, tail=[2,3]
+	buf.WriteAll(1, 2, 3) // oldestIdx=0, len=3
+	buf.PopBack()         // oldestIdx=1, len=2, tail=[2,3]
 
 	require.Equal(t, []int{2, 3}, buf.Tail())
 	require.Equal(t, []int{2, 3}, tailbuf.SliceTail(buf, 0, 2))
@@ -1255,11 +1256,11 @@ func TestDo_NilContext(t *testing.T) {
 // [0, i) have been replaced and items at [i, Len) are untouched. The
 // returned error is propagated unchanged.
 //
-// We deliberately drive the buffer into a wrapped state (back > 0, items
-// span the physical end of window) to ensure the partial-mutation accounting
-// is correct under wrap, not just for back=0.
+// We deliberately drive the buffer into a wrapped state (oldestIdx > 0,
+// items span the physical end of window) to ensure the partial-mutation
+// accounting is correct under wrap, not just for oldestIdx=0.
 func TestDo_ErrorHaltsAndPreservesPartialMutation(t *testing.T) {
-	// cap=4, write 6 items: window=[5,6,3,4], back=2, len=4. Tail is [3,4,5,6].
+	// cap=4, write 6 items: window=[5,6,3,4], oldestIdx=2, len=4. Tail is [3,4,5,6].
 	buf := tailbuf.New[int](4).WriteAll(1, 2, 3, 4, 5, 6)
 	require.Equal(t, []int{3, 4, 5, 6}, buf.Tail())
 
@@ -1278,13 +1279,13 @@ func TestDo_ErrorHaltsAndPreservesPartialMutation(t *testing.T) {
 }
 
 // TestApplyDo_WrappedLen3Plus exercises Apply and Do over a multi-item
-// wrapped tail (cap=4, back=2, len=4). The A1 over-iteration regression
+// wrapped tail (cap=4, oldestIdx=2, len=4). The A1 over-iteration regression
 // class is most likely to re-emerge when wrap produces both a pre-wrap
 // and post-wrap segment, so we want to pin "exactly Len calls in
 // oldest-to-newest order" against this shape specifically.
 func TestApplyDo_WrappedLen3Plus(t *testing.T) {
 	// Both subtests share this initial state:
-	// cap=4, write 6 items: window=[5,6,3,4], back=2, len=4. Tail=[3,4,5,6].
+	// cap=4, write 6 items: window=[5,6,3,4], oldestIdx=2, len=4. Tail=[3,4,5,6].
 	const bufCap = 4
 	all := []int{1, 2, 3, 4, 5, 6}
 	wantTail := []int{3, 4, 5, 6}
@@ -1404,7 +1405,7 @@ func TestTail_AppendDoesNotCorruptBuffer(t *testing.T) {
 // and would not fail any other test.
 func TestReset_FromWrappedState(t *testing.T) {
 	buf := tailbuf.New[string](3)
-	buf.WriteAll("a", "b", "c", "d", "e") // window=[d,e,c], back=2, wrapped
+	buf.WriteAll("a", "b", "c", "d", "e") // window=[d,e,c], oldestIdx=2, wrapped
 	require.Equal(t, 2, buf.Offset())
 	require.Equal(t, []string{"c", "d", "e"}, buf.Tail())
 
@@ -1429,7 +1430,7 @@ func TestReset_FromWrappedState(t *testing.T) {
 // not this start-inside / end-past combination.
 func TestSliceTail_WrappedBufferClipEnd(t *testing.T) {
 	buf := tailbuf.New[int](3)
-	buf.WriteAll(1, 2, 3, 4, 5) // window=[4,5,3], back=2, wrapped
+	buf.WriteAll(1, 2, 3, 4, 5) // window=[4,5,3], oldestIdx=2, wrapped
 	require.Equal(t, []int{3, 4, 5}, buf.Tail())
 
 	// Tail-relative positions [1, 100): end is clipped to 3, so [1, 3).
@@ -1449,7 +1450,7 @@ func TestSliceTail_WrappedBufferClipEnd(t *testing.T) {
 // The 3-index cap prevents append from corrupting the buffer, but
 // element-level writes are still observed.
 func TestTail_ElementMutationVisibleViaPeek(t *testing.T) {
-	buf := tailbuf.New[int](5).WriteAll(1, 2, 3) // no-wrap, back=0, len=3
+	buf := tailbuf.New[int](5).WriteAll(1, 2, 3) // no-wrap, oldestIdx=0, len=3
 	tail := buf.Tail()
 	require.Equal(t, []int{1, 2, 3}, tail)
 

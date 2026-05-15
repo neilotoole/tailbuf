@@ -118,13 +118,28 @@ func BenchmarkPeek(b *testing.B) {
 	}
 }
 
-// BenchmarkApply_vs_TailLoop compares [Buf.Apply] against the equivalent
-// "range over [Buf.Tail]" pattern that the godoc recommends against. In
-// the no-wrap case both walk the same physical storage and the TailLoop
-// path is the faster one (the compiler inlines the loop body and avoids
-// modular indexing). In the wrap case the TailLoop path pays one
-// allocation per iteration to materialize a contiguous slice — which is
-// the measurement; Apply avoids it.
+// BenchmarkApply_vs_TailLoop compares [Buf.Apply] against the
+// "range over [Buf.Tail]" pattern.
+//
+// Caveat — the two pairs measure different things:
+//
+//   - In the no-wrap case [Buf.Tail] aliases the buffer's internal window,
+//     so the TailLoop subtest's element writes DO reach the buffer.
+//     This is an apples-to-apples comparison and TailLoop is the faster
+//     one (the compiler inlines the loop body and avoids the modular
+//     indexing that Apply must perform).
+//   - In the wrap case [Buf.Tail] returns a fresh allocation, so the
+//     TailLoop subtest's writes go into that throwaway slice and never
+//     reach the buffer. The two wrapped subtests therefore measure
+//     semantically different operations: Apply mutates the ring; TailLoop
+//     allocates, copies, mutates the copy, and discards it. That is
+//     exactly the silent-data-loss footgun the godoc on [Buf.Apply] and
+//     the "Slice aliasing" section of the package doc warn against.
+//
+// In short: the no-wrap pair quantifies how much slower Apply's uniform
+// modular indexing is than a direct loop; the wrap pair quantifies the
+// cost of Tail's allocation but underestimates the cost of writing the
+// transformed values back.
 func BenchmarkApply_vs_TailLoop(b *testing.B) {
 	b.Run("Apply/no-wrap", func(b *testing.B) {
 		buf := tailbuf.New[int](1024).WriteAll(make([]int, 1024)...)
