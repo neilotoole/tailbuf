@@ -76,7 +76,7 @@
 //     start values below [Buf.Offset] — including negative ones — are
 //     clipped to "below the live range" rather than panicking, because
 //     in nominal-index space "below Offset" just means "already evicted":
-//     a meaningful, not erroneous, condition. positions past the live
+//     a meaningful, not erroneous, condition. Positions past the live
 //     tail are clipped silently.
 //
 // Pick [Buf.Peek] when an out-of-range index is a programming error you want
