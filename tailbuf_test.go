@@ -1780,6 +1780,116 @@ func TestInvariantWalker_ZeroCap(t *testing.T) {
 	check(&z, "zero value after PopBack")
 }
 
+// TestDropFront covers the no-allocation front-end discard variant.
+// Mirrors the existing PopFront tests but checks that DropFront leaves
+// the buffer in the same state PopFront would, minus the returned value.
+func TestDropFront(t *testing.T) {
+	t.Run("no-op on empty New", func(t *testing.T) {
+		buf := tailbuf.New[int](3)
+		buf.DropFront()
+		require.Zero(t, buf.Len())
+		tailbuf.CheckInvariants(t, buf)
+	})
+
+	t.Run("no-op on zero value", func(t *testing.T) {
+		var z tailbuf.Buf[int]
+		z.DropFront()
+		require.Zero(t, z.Len())
+		tailbuf.CheckInvariants(t, &z)
+	})
+
+	t.Run("matches PopFront's state effect", func(t *testing.T) {
+		// Drive both buffers through identical sequences. PopFront returns
+		// a value (discarded here); DropFront does not. End state must be
+		// bit-identical.
+		mk := func() *tailbuf.Buf[int] {
+			return tailbuf.New[int](3).WriteAll(1, 2, 3, 4)
+		}
+		popped := mk()
+		_ = popped.PopFront() // returns 4 (newest)
+
+		dropped := mk()
+		dropped.DropFront()
+
+		tailbuf.RequireEqualInternalState(t, popped, dropped)
+		require.Equal(t, []int{2, 3}, dropped.Tail())
+		tailbuf.CheckInvariants(t, dropped)
+	})
+
+	t.Run("does not change Offset", func(t *testing.T) {
+		buf := tailbuf.New[int](3).WriteAll(1, 2, 3, 4) // offset=1
+		buf.DropFront()
+		require.Equal(t, 1, buf.Offset(), "DropFront must not advance Offset")
+	})
+
+	t.Run("canonical-empty pin: drain to empty", func(t *testing.T) {
+		buf := tailbuf.New[int](3).WriteAll(1, 2, 3, 4) // wrap: oldestIdx=1
+		buf.DropFront()
+		buf.DropFront()
+		buf.DropFront()
+		require.Zero(t, buf.Len())
+		// Compare against the canonical empty state reached via PopFrontN.
+		ref := tailbuf.New[int](3).WriteAll(1, 2, 3, 4)
+		ref.PopFrontN(99)
+		tailbuf.RequireEqualInternalState(t, buf, ref)
+		tailbuf.CheckInvariants(t, buf)
+	})
+}
+
+// TestDropFrontN covers the bulk no-allocation front-end discard.
+func TestDropFrontN(t *testing.T) {
+	t.Run("no-op cases", func(t *testing.T) {
+		buf := tailbuf.New[int](3)
+		buf.DropFrontN(99) // empty buffer
+		require.Zero(t, buf.Len())
+
+		buf.WriteAll(1, 2, 3)
+		buf.DropFrontN(0) // n == 0
+		require.Equal(t, []int{1, 2, 3}, buf.Tail())
+		buf.DropFrontN(-5) // negative n
+		require.Equal(t, []int{1, 2, 3}, buf.Tail())
+	})
+
+	t.Run("matches PopFrontN's state effect", func(t *testing.T) {
+		mk := func() *tailbuf.Buf[int] {
+			return tailbuf.New[int](5).WriteAll(1, 2, 3, 4, 5)
+		}
+
+		// Partial drain.
+		popped := mk()
+		_ = popped.PopFrontN(2) // [4, 5]
+		dropped := mk()
+		dropped.DropFrontN(2)
+		tailbuf.RequireEqualInternalState(t, popped, dropped)
+
+		// Drain larger than Len.
+		popped = mk()
+		_ = popped.PopFrontN(99)
+		dropped = mk()
+		dropped.DropFrontN(99)
+		tailbuf.RequireEqualInternalState(t, popped, dropped)
+	})
+
+	t.Run("n >= len from wrapped state hits canonical empty", func(t *testing.T) {
+		buf := tailbuf.New[int](3).WriteAll(1, 2, 3, 4, 5) // wrap: oldestIdx=2
+		buf.DropFrontN(99)
+		require.Zero(t, buf.Len())
+		tailbuf.CheckInvariants(t, buf)
+
+		// Verify the explicit oldestIdx=0 assignment matched PopFrontN's
+		// path; offsets must match (neither advances offset).
+		ref := tailbuf.New[int](3).WriteAll(1, 2, 3, 4, 5)
+		ref.PopFrontN(99)
+		tailbuf.RequireEqualInternalState(t, buf, ref)
+	})
+
+	t.Run("does not change Offset", func(t *testing.T) {
+		buf := tailbuf.New[int](3).WriteAll(1, 2, 3, 4, 5) // offset=2
+		buf.DropFrontN(2)
+		require.Equal(t, 2, buf.Offset(), "DropFrontN must not advance Offset")
+	})
+}
+
 // TestSliceNominal_NegativeStartClipsNotPanics pins the documented asymmetry
 // between SliceTail (panics on start<0) and SliceNominal (clips start<0
 // like any other below-Offset index). In nominal-index space, "below

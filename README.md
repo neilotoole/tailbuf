@@ -70,7 +70,11 @@ section of the godoc for how this differs from `Buf.Peek` (which panics on
 out-of-range) and for the deliberate asymmetry around negative start
 values between `SliceTail` and `SliceNominal`.
 
-There are various functions for popping, dropping, or peeking into the tail buffer.
+There are various functions for popping, dropping, or peeking into the tail
+buffer. `PopFront`/`PopFrontN` and `PopBack`/`PopBackN` remove and return
+items from the newest and oldest ends respectively; the corresponding
+`DropFront`/`DropFrontN`/`DropBack`/`DropBackN` family does the same without
+allocating a slice for the return value.
 
 ```go
   buf := tailbuf.New[string](3)
