@@ -1725,6 +1725,19 @@ func TestInvariantWalker(t *testing.T) {
 		// front-end pin is only exercised by TestCanonicalEmpty.
 		{func() { buf.WriteAll(20, 21, 22, 23, 24) }, "WriteAll 20..24 (wrap)"},
 		{func() { buf.PopFrontN(99) }, "PopFrontN(99) from wrap"},
+		// Exercise DropFront and DropFrontN through the walker so the
+		// new discard methods are covered by CheckInvariants alongside
+		// every other state transition. WriteAll 25..29 wraps; DropFront
+		// shrinks from the newest end without touching offset; the
+		// subsequent DropFrontN(2) covers the partial branch; WriteAll
+		// 30..34 wraps again and DropFrontN(99) covers the n>=len branch
+		// (explicit oldestIdx=0 pin), now with CheckInvariants firing
+		// after each step.
+		{func() { buf.WriteAll(25, 26, 27, 28, 29) }, "WriteAll 25..29 (wrap)"},
+		{func() { buf.DropFront() }, "DropFront from wrap"},
+		{func() { buf.DropFrontN(2) }, "DropFrontN(2) partial"},
+		{func() { buf.WriteAll(30, 31, 32, 33, 34) }, "WriteAll 30..34 (wrap)"},
+		{func() { buf.DropFrontN(99) }, "DropFrontN(99) from wrap"},
 	}
 	for _, step := range steps {
 		step.do()
@@ -1762,6 +1775,10 @@ func TestInvariantWalker_ZeroCap(t *testing.T) {
 	check(buf, "after PopBack")
 	buf.DropBack()
 	check(buf, "after DropBack")
+	buf.DropFront() // must also be a no-op on cap=0
+	check(buf, "after DropFront")
+	buf.DropFrontN(99) // must also be a no-op on cap=0
+	check(buf, "after DropFrontN")
 	buf.Clear() // no-op on empty; offset unchanged
 	check(buf, "after Clear")
 	buf.Reset()
@@ -1778,6 +1795,10 @@ func TestInvariantWalker_ZeroCap(t *testing.T) {
 	check(&z, "zero value after PopFront")
 	z.PopBack()
 	check(&z, "zero value after PopBack")
+	z.DropFront()
+	check(&z, "zero value after DropFront")
+	z.DropFrontN(99)
+	check(&z, "zero value after DropFrontN")
 }
 
 // TestDropFront covers the no-allocation front-end discard variant.
@@ -1834,6 +1855,26 @@ func TestDropFront(t *testing.T) {
 		tailbuf.RequireEqualInternalState(t, buf, ref)
 		tailbuf.CheckInvariants(t, buf)
 	})
+
+	t.Run("no-wrap state", func(t *testing.T) {
+		// All the other subtests use cap=3 WriteAll(1,2,3,4) which forces
+		// wrap. Exercise the no-wrap path explicitly so a regression in
+		// the modular calc that special-cased oldestIdx==0 is caught.
+		buf := tailbuf.New[int](4).WriteAll(1, 2, 3) // oldestIdx=0, len=3
+		buf.DropFront()
+		require.Equal(t, []int{1, 2}, buf.Tail())
+		tailbuf.CheckInvariants(t, buf)
+	})
+
+	t.Run("single-item no-wrap drain", func(t *testing.T) {
+		// Smallest possible non-empty buffer. Exercises the canonical-empty
+		// pin from a state where the cursor was already at 0, which is
+		// trivially correct but worth pinning so the path is covered.
+		buf := tailbuf.New[int](3).Write(42) // oldestIdx=0, len=1
+		buf.DropFront()
+		require.Zero(t, buf.Len())
+		tailbuf.CheckInvariants(t, buf)
+	})
 }
 
 // TestDropFrontN covers the bulk no-allocation front-end discard.
@@ -1881,6 +1922,19 @@ func TestDropFrontN(t *testing.T) {
 		ref := tailbuf.New[int](3).WriteAll(1, 2, 3, 4, 5)
 		ref.PopFrontN(99)
 		tailbuf.RequireEqualInternalState(t, buf, ref)
+	})
+
+	t.Run("partial drain from wrapped state matches PopFrontN", func(t *testing.T) {
+		// The "matches PopFrontN's state effect" subtest above uses cap=5
+		// WriteAll(1..5) which is no-wrap (oldestIdx=0). The partial-drain
+		// branch's modular arithmetic at (oldestIdx + base + i) % winLen
+		// only meaningfully differs from naive indexing when oldestIdx > 0,
+		// so exercise that explicitly.
+		popped := tailbuf.New[int](3).WriteAll(1, 2, 3, 4, 5) // wrap: oldestIdx=2
+		_ = popped.PopFrontN(1)                               // returns [5] (newest)
+		dropped := tailbuf.New[int](3).WriteAll(1, 2, 3, 4, 5)
+		dropped.DropFrontN(1)
+		tailbuf.RequireEqualInternalState(t, popped, dropped)
 	})
 
 	t.Run("does not change Offset", func(t *testing.T) {
@@ -1948,6 +2002,24 @@ func TestSliceNominal_NegativeStartClipsNotPanics(t *testing.T) {
 	t.Run("math.MinInt end short-circuits to empty", func(t *testing.T) {
 		// end < start would panic, so test the boundary: end == start.
 		require.Equal(t, []int{}, tailbuf.SliceNominal(buf, math.MinInt, math.MinInt))
+	})
+
+	t.Run("math.MaxInt extremes do not overflow", func(t *testing.T) {
+		// Symmetric to the MinInt cases. start > b.offset (b.offset >= 0
+		// per CheckInvariants), so tailStart = MaxInt - b.offset is in
+		// range; tailEnd similarly. No overflow possible. Result is
+		// empty because the requested range is entirely past the live
+		// tail.
+		require.NotPanics(t, func() {
+			got := tailbuf.SliceNominal(buf, math.MaxInt-1, math.MaxInt)
+			require.Empty(t, got)
+		})
+		// MaxInt as end alone (start in-range) clips to the live tail's
+		// upper bound; same result as (Offset, Offset+Len).
+		require.NotPanics(t, func() {
+			got := tailbuf.SliceNominal(buf, 2, math.MaxInt)
+			require.Equal(t, []int{3, 4, 5}, got)
+		})
 	})
 }
 
