@@ -120,9 +120,11 @@ func BenchmarkPeek(b *testing.B) {
 
 // BenchmarkApply_vs_TailLoop compares [Buf.Apply] against the equivalent
 // "range over [Buf.Tail]" pattern that the godoc recommends against. In
-// the no-wrap case both walk the same physical storage; in the wrap case
-// the TailLoop path must materialize a contiguous slice first, so Apply
-// is expected to win more decisively there.
+// the no-wrap case both walk the same physical storage and the TailLoop
+// path is the faster one (the compiler inlines the loop body and avoids
+// modular indexing). In the wrap case the TailLoop path pays one
+// allocation per iteration to materialize a contiguous slice — which is
+// the measurement; Apply avoids it.
 func BenchmarkApply_vs_TailLoop(b *testing.B) {
 	b.Run("Apply/no-wrap", func(b *testing.B) {
 		buf := tailbuf.New[int](1024).WriteAll(make([]int, 1024)...)
@@ -173,8 +175,12 @@ func BenchmarkApply_vs_TailLoop(b *testing.B) {
 }
 
 // BenchmarkPopFront_Refill measures [Buf.PopFront] in a steady-state
-// "pop-then-refill" loop. The per-op cost is one PopFront + one Write;
-// halve the reported ns/op for a rough per-primitive estimate.
+// "pop-then-refill" loop. The per-op cost is one PopFront + one Write,
+// where the Write lands on a not-yet-full buffer (PopFront just shrank
+// len), so this measures Pop + Write-without-eviction, not Pop +
+// Write-with-eviction. Halve the reported ns/op only for a rough
+// per-primitive estimate; the two halves are not interchangeable with
+// the steady-state-evicting Write measured by BenchmarkWrite.
 func BenchmarkPopFront_Refill(b *testing.B) {
 	buf := tailbuf.New[int](1024).WriteAll(make([]int, 1024)...)
 	b.ReportAllocs()
@@ -186,7 +192,8 @@ func BenchmarkPopFront_Refill(b *testing.B) {
 }
 
 // BenchmarkPopBack_Refill mirrors BenchmarkPopFront_Refill for the back
-// end so the two sides can be compared directly.
+// end so the two sides can be compared directly. Same composite-op
+// caveat applies: this measures Pop + Write-without-eviction.
 func BenchmarkPopBack_Refill(b *testing.B) {
 	buf := tailbuf.New[int](1024).WriteAll(make([]int, 1024)...)
 	b.ReportAllocs()

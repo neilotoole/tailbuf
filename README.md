@@ -121,7 +121,7 @@ reports whether a given nominal index is still alive.
   fmt.Println(start, end)              // 2 5
   fmt.Println(buf.InBounds(1))         // false (evicted)
   fmt.Println(buf.InBounds(3))         // true  ("d")
-  fmt.Println(buf.Offset())            // 2 (items dropped from the back)
+  fmt.Println(buf.Offset())            // 2 (items evicted from the back)
 ```
 
 And then there's the [`Apply`](https://pkg.go.dev/github.com/neilotoole/tailbuf#Buf.Apply) method, which applies a func to each element in the buffer,
