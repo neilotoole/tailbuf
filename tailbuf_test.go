@@ -1742,6 +1742,14 @@ func TestInvariantWalker_ZeroCap(t *testing.T) {
 	check(buf, "after Write")
 	buf.WriteAll(2, 3, 4)
 	check(buf, "after WriteAll(3)")
+	// PopFront/PopBack/DropBack must be no-ops on a cap=0 buffer; pin that
+	// alongside the rest of the invariants.
+	require.Equal(t, 0, buf.PopFront(), "PopFront on cap=0 returns zero value")
+	check(buf, "after PopFront")
+	require.Equal(t, 0, buf.PopBack(), "PopBack on cap=0 returns zero value")
+	check(buf, "after PopBack")
+	buf.DropBack()
+	check(buf, "after DropBack")
 	buf.Clear() // no-op on empty; offset unchanged
 	check(buf, "after Clear")
 	buf.Reset()
@@ -1754,6 +1762,95 @@ func TestInvariantWalker_ZeroCap(t *testing.T) {
 	check(&z, "zero value fresh")
 	z.Write(1)
 	check(&z, "zero value after Write")
+	z.PopFront() // exercises the nil-window guard
+	check(&z, "zero value after PopFront")
+	z.PopBack()
+	check(&z, "zero value after PopBack")
+}
+
+// TestCanonicalEmpty_ViaEveryRoute pins the new invariant established by the
+// "Canonicalize empty-buffer state" change: every operation that empties
+// the buffer leaves it in the canonical empty state (oldestIdx == 0).
+// Without this test, removing any of the three `if b.len == 0 {
+// b.oldestIdx = 0 }` lines in PopFront / PopBack / DropBack compiles
+// and passes every other test, silently reintroducing the asymmetry.
+func TestCanonicalEmpty_ViaEveryRoute(t *testing.T) {
+	// Drive the buffer into a wrapped state where oldestIdx != 0, so that
+	// reaching empty via the modular cursor advance lands at oldestIdx > 0
+	// before the empty-pin fires.
+	mkWrapped := func() *tailbuf.Buf[int] {
+		// WriteAll(1,2,3,4) on cap=3 evicts 1; window=[4,2,3], oldestIdx=1,
+		// len=3, offset=1, written=4. The wrap puts the live items at
+		// physical positions 1,2,0 — visiting from oldestIdx=1 wraps once.
+		return tailbuf.New[int](3).WriteAll(1, 2, 3, 4)
+	}
+
+	t.Run("PopBack to empty", func(t *testing.T) {
+		buf := mkWrapped()
+		for i := 0; i < 3; i++ {
+			buf.PopBack()
+		}
+		require.Zero(t, buf.Len())
+		tailbuf.CheckInvariants(t, buf)
+	})
+
+	t.Run("DropBack to empty", func(t *testing.T) {
+		buf := mkWrapped()
+		for i := 0; i < 3; i++ {
+			buf.DropBack()
+		}
+		require.Zero(t, buf.Len())
+		tailbuf.CheckInvariants(t, buf)
+	})
+
+	t.Run("PopFront to empty", func(t *testing.T) {
+		buf := mkWrapped()
+		for i := 0; i < 3; i++ {
+			buf.PopFront()
+		}
+		require.Zero(t, buf.Len())
+		tailbuf.CheckInvariants(t, buf)
+	})
+
+	t.Run("post-empty Write lands at window[0]", func(t *testing.T) {
+		// The canonical-empty pin guarantees the next Write hits the
+		// "case 0" path in the write helper, which writes at window[0].
+		// Verify via Tail() — the single live item should be at the head
+		// of the underlying storage, independent of which emptying route
+		// we took.
+		// Field order: pointer-only field before mixed-pointer field to
+		// satisfy fieldalignment lint (see TestInvariantWalker for the
+		// same shape).
+		for _, drain := range []struct {
+			do   func(*tailbuf.Buf[int])
+			name string
+		}{
+			{func(b *tailbuf.Buf[int]) {
+				for i := 0; i < 3; i++ {
+					b.PopBack()
+				}
+			}, "PopBack"},
+			{func(b *tailbuf.Buf[int]) {
+				for i := 0; i < 3; i++ {
+					b.DropBack()
+				}
+			}, "DropBack"},
+			{func(b *tailbuf.Buf[int]) {
+				for i := 0; i < 3; i++ {
+					b.PopFront()
+				}
+			}, "PopFront"},
+		} {
+			t.Run(drain.name, func(t *testing.T) {
+				buf := mkWrapped()
+				drain.do(buf)
+				buf.Write(99)
+				require.Equal(t, []int{99}, buf.Tail())
+				require.Equal(t, 99, buf.Peek(0))
+				tailbuf.CheckInvariants(t, buf)
+			})
+		}
+	})
 }
 
 // TestBoundsInBounds_AfterReset pins that Reset leaves Bounds and InBounds

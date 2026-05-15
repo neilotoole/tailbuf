@@ -27,6 +27,10 @@ func TailNewSlice[T any](b *Buf[T]) []T {
 //
 //   - 0 <= len <= cap
 //   - When len > 0: oldestIdx ∈ [0, cap)
+//   - When len == 0: oldestIdx == 0 (the canonical-empty pin established
+//     by Reset, Clear, the bulk N-variants of Pop/Drop, the empty case
+//     of the write helper, and the explicit empty-pin in PopFront /
+//     PopBack / DropBack)
 //   - offset >= 0 and written >= 0
 //   - offset + len <= written
 //
@@ -41,6 +45,9 @@ func CheckInvariants[T any](tb testing.TB, b *Buf[T]) {
 	if b.len > 0 {
 		require.GreaterOrEqual(tb, b.oldestIdx, 0, "oldestIdx must be >= 0 when len > 0")
 		require.Less(tb, b.oldestIdx, winLen, "oldestIdx (%d) must be < cap (%d) when len > 0", b.oldestIdx, winLen)
+	} else {
+		require.Equal(tb, 0, b.oldestIdx,
+			"oldestIdx must be pinned to 0 when len == 0 (canonical-empty invariant)")
 	}
 	require.GreaterOrEqual(tb, b.offset, 0, "offset must be >= 0")
 	require.GreaterOrEqual(tb, b.written, 0, "written must be >= 0")
