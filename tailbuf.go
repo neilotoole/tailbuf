@@ -161,10 +161,11 @@ import "context"
 //   - When len > 0: oldestIdx ∈ [0, len(window)) and points to the oldest
 //     live item; the newest live item is at
 //     (oldestIdx + len - 1) mod len(window).
-//   - When len == 0: oldestIdx has no semantic meaning. Callers must not
-//     depend on its value; the implementation happens to pin it to 0 on
-//     every path that empties the buffer, but that is not part of the
-//     contract.
+//   - When len == 0: oldestIdx has no semantic meaning to callers. The
+//     implementation pins it to 0 on every path that empties the buffer
+//     so that two empty buffers reached via different operation sequences
+//     have identical internal state, but callers must not rely on the
+//     value; future implementations may relax this canonicalization.
 //   - offset never decreases except across [Buf.Reset]; it advances on
 //     eviction-on-write (including the implicit eviction on every
 //     [Buf.Write] / [Buf.WriteAll] against a zero-capacity buffer), on
@@ -185,9 +186,11 @@ type Buf[T any] struct {
 	window []T
 
 	// oldestIdx is the physical index in window of the oldest live item.
-	// Meaningful only when len > 0; otherwise its value is undefined (the
-	// implementation pins it to 0 on every emptying path, but callers
-	// must not rely on that).
+	// Meaningful only when len > 0; otherwise its value is irrelevant to
+	// callers. The implementation canonicalizes it to 0 on every emptying
+	// path so internal state is deterministic and two empty buffers
+	// compare equal regardless of history; callers must not rely on this
+	// (see the type-level invariants block for the rationale).
 	//
 	// Name choice: this is "the back of the tail" in the package's
 	// vocabulary, so [Buf.Back] returns window[oldestIdx]. Naming the
@@ -603,6 +606,14 @@ func (b *Buf[T]) PopFront() T {
 	var zero T
 	b.window[idx] = zero
 	b.len--
+	if b.len == 0 {
+		// Pin oldestIdx to 0 so every emptying path lands in the same
+		// canonical empty state. The field is documented as semantically
+		// meaningless when len == 0; pinning it here lets that doc claim
+		// be unconditionally true and makes empty buffers compare equal
+		// regardless of how they reached empty.
+		b.oldestIdx = 0
+	}
 	return item
 }
 
@@ -660,6 +671,10 @@ func (b *Buf[T]) PopBack() T {
 	b.oldestIdx = (b.oldestIdx + 1) % len(b.window)
 	b.len--
 	b.offset++
+	if b.len == 0 {
+		// See PopFront for the rationale; same canonical-empty pin.
+		b.oldestIdx = 0
+	}
 	return item
 }
 
@@ -713,6 +728,10 @@ func (b *Buf[T]) DropBack() {
 	b.oldestIdx = (b.oldestIdx + 1) % len(b.window)
 	b.len--
 	b.offset++
+	if b.len == 0 {
+		// See PopFront for the rationale; same canonical-empty pin.
+		b.oldestIdx = 0
+	}
 }
 
 // DropBackN removes up to n oldest items, advancing [Buf.Offset] by the
