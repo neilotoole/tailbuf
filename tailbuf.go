@@ -291,8 +291,8 @@ func (b *Buf[T]) WriteAll(items ...T) *Buf[T] {
 //
 //   - empty:   no live items; place at window[0] and pin oldestIdx=0.
 //   - full:    overwrite the slot at oldestIdx, then advance oldestIdx and
-//             offset. The just-written slot is now the newest live item;
-//             oldestIdx has moved on to what used to be the second-oldest.
+//     offset. The just-written slot is now the newest live item;
+//     oldestIdx has moved on to what used to be the second-oldest.
 //   - partial: place just past the current front; bump len.
 //
 // The eviction predicate is `b.len == cap`. A predicate over written (e.g.
