@@ -1715,6 +1715,16 @@ func TestInvariantWalker(t *testing.T) {
 		{func() { buf.Write(14) }, "Write 14"},
 		{func() { buf.Reset() }, "Reset"},
 		{func() { buf.Write(15) }, "Write 15"},
+		// Drive into wrap, then drain via PopBackN's n>=len branch
+		// (routes through Clear). Without this, walker coverage of
+		// PopBackN's empty path is restricted to the non-wrap case.
+		{func() { buf.WriteAll(16, 17, 18, 19) }, "WriteAll 16,17,18,19 (wrap)"},
+		{func() { buf.PopBackN(99) }, "PopBackN(99) from wrap"},
+		// Drive into wrap again, then drain via PopFrontN's n>=len
+		// branch (explicit oldestIdx=0 pin). Without this, the explicit
+		// front-end pin is only exercised by TestCanonicalEmpty.
+		{func() { buf.WriteAll(20, 21, 22, 23, 24) }, "WriteAll 20..24 (wrap)"},
+		{func() { buf.PopFrontN(99) }, "PopFrontN(99) from wrap"},
 	}
 	for _, step := range steps {
 		step.do()
@@ -1875,44 +1885,43 @@ func TestCanonicalEmpty_ViaEveryRoute(t *testing.T) {
 		tailbuf.CheckInvariants(t, buf)
 	})
 
-	t.Run("post-empty Write lands at window[0]", func(t *testing.T) {
-		// The canonical-empty pin guarantees the next Write hits the
-		// "case 0" path in the write helper, which writes at window[0].
-		// Verify via Tail() — the single live item should be at the head
-		// of the underlying storage, independent of which emptying route
-		// we took.
-		// Field order: pointer-only field before mixed-pointer field to
-		// satisfy fieldalignment lint (see TestInvariantWalker for the
-		// same shape).
-		for _, drain := range []struct {
-			do   func(*tailbuf.Buf[int])
-			name string
-		}{
-			{func(b *tailbuf.Buf[int]) {
-				for i := 0; i < 3; i++ {
-					b.PopBack()
-				}
-			}, "PopBack"},
-			{func(b *tailbuf.Buf[int]) {
-				for i := 0; i < 3; i++ {
-					b.DropBack()
-				}
-			}, "DropBack"},
-			{func(b *tailbuf.Buf[int]) {
-				for i := 0; i < 3; i++ {
-					b.PopFront()
-				}
-			}, "PopFront"},
-		} {
-			t.Run(drain.name, func(t *testing.T) {
-				buf := mkWrapped()
-				drain.do(buf)
-				buf.Write(99)
-				require.Equal(t, []int{99}, buf.Tail())
-				require.Equal(t, 99, buf.Peek(0))
-				tailbuf.CheckInvariants(t, buf)
-			})
+	// Converging internal state — the load-bearing assertions. Without
+	// the canonical-empty pin in PopFront/PopBack/DropBack, draining a
+	// wrapped buffer via the single-item routes would leave oldestIdx
+	// mid-wrap, while the bulk N-variants (Clear path for back-end,
+	// explicit oldestIdx=0 for front-end) would always land at 0.
+	// RequireEqualInternalState compares oldestIdx unconditionally, so
+	// these pairwise comparisons fail loudly if the pin is removed.
+	//
+	// (The previous "post-empty Write lands at window[0]" subsuite did
+	// NOT actually depend on the pin — write's empty-case branch
+	// unconditionally sets oldestIdx=0 before writing window[0], so the
+	// Tail()/Peek() assertions would pass even with the pin removed.
+	// CheckInvariants caught the regression there; these comparisons
+	// catch it without needing CheckInvariants to be load-bearing.)
+	t.Run("converging internal state: back-end routes", func(t *testing.T) {
+		a := mkWrapped()
+		for i := 0; i < 3; i++ {
+			a.PopBack()
 		}
+		b := mkWrapped()
+		for i := 0; i < 3; i++ {
+			b.DropBack()
+		}
+		c := mkWrapped()
+		c.DropBackN(99) // routes through Clear; always pins oldestIdx to 0
+		tailbuf.RequireEqualInternalState(t, a, b)
+		tailbuf.RequireEqualInternalState(t, a, c)
+	})
+
+	t.Run("converging internal state: front-end routes", func(t *testing.T) {
+		a := mkWrapped()
+		for i := 0; i < 3; i++ {
+			a.PopFront()
+		}
+		b := mkWrapped()
+		b.PopFrontN(99) // takes the n >= len branch with explicit oldestIdx=0
+		tailbuf.RequireEqualInternalState(t, a, b)
 	})
 }
 
