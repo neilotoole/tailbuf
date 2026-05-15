@@ -219,6 +219,36 @@ func BenchmarkPopBack_Refill(b *testing.B) {
 	}
 }
 
+// BenchmarkDropFront_Refill mirrors BenchmarkPopFront_Refill for the
+// no-allocation discard variant. The whole point of DropFront is to
+// avoid the value-copy cost of returning the item; this benchmark with
+// [b.ReportAllocs] locks in the "0 allocs/op" contract that justifies
+// DropFront's existence.
+func BenchmarkDropFront_Refill(b *testing.B) {
+	buf := tailbuf.New[int](1024).WriteAll(make([]int, 1024)...)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.DropFront()
+		buf.Write(i)
+	}
+}
+
+// BenchmarkDropFrontN_Refill measures the bulk discard. The PopFrontN
+// counterpart would allocate a fresh []T on every call to return the
+// discarded items; DropFrontN avoids that allocation entirely. Pinning
+// the 0-alloc contract with [b.ReportAllocs] is the contract that
+// distinguishes DropFrontN from PopFrontN at the type level.
+func BenchmarkDropFrontN_Refill(b *testing.B) {
+	buf := tailbuf.New[int](1024).WriteAll(make([]int, 1024)...)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.DropFrontN(16)
+		buf.WriteAll(make([]int, 16)...)
+	}
+}
+
 // Keep sinkAny referenced so the linker cannot elide it if a test file
 // is the only consumer of the package-level sinks.
 var _ = sinkAny
