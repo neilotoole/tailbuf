@@ -66,7 +66,7 @@
 // The two slice helpers and the indexed read disagree deliberately on
 // out-of-range arguments:
 //
-//   - [Buf.Peek] panics when its argument is outside [0, [Buf.Len]).
+//   - [Buf.Peek] panics on an out-of-range tail index (negative, or >= Len).
 //   - [SliceTail] and [SliceNominal] clip silently: positions past the live
 //     tail return an empty slice rather than panicking.
 //
@@ -337,7 +337,7 @@ func (b *Buf[T]) Cap() int {
 }
 
 // Len returns the number of items currently in the tail window. The result
-// is always in [0, [Buf.Cap]].
+// is always in the inclusive range 0 .. [Buf.Cap].
 //
 // Len decreases on Pop/Drop/Clear/Reset; it grows on Write/WriteAll up to
 // [Buf.Cap], at which point further writes evict instead of growing.
@@ -443,11 +443,11 @@ func (b *Buf[T]) Back() T {
 }
 
 // Peek returns the item at the given tail-relative index, counting from
-// the oldest live item (tailIndex=0 is [Buf.Back], tailIndex=[Buf.Len]-1
-// is [Buf.Front]). The argument is in tail-relative space, NOT the
+// the oldest live item: tailIndex 0 is [Buf.Back], tailIndex Len-1 is
+// [Buf.Front]. The argument is in tail-relative space, NOT the
 // nominal-index space used by [Buf.InBounds] / [Buf.Bounds] / [Buf.Offset].
-// Panics if tailIndex is negative, tailIndex >= [Buf.Len], or the tail is
-// empty.
+// Panics on an out-of-range tail index (negative, or >= Len) or on an
+// empty tail.
 //
 // Peek is O(1) and does not allocate.
 //
