@@ -133,36 +133,38 @@ import "context"
 // # Internal layout
 //
 // The buffer is laid out as a single backing slice (window) used as a ring.
-// "back" is the physical index of the oldest live item; the live items
-// occupy "len" consecutive positions starting at back, modulo capacity.
+// oldestIdx is the physical index of the oldest live item; the live items
+// occupy "len" consecutive positions starting at oldestIdx, modulo capacity.
 //
-// Example A — no wrap (cap=5, back=1, len=3):
+// Example A — no wrap (cap=5, oldestIdx=1, len=3):
 //
 //	physical:    0     1     2     3     4
 //	window:    [ _  |  A  |  B  |  C  |  _ ]
-//	                  ^back
+//	                  ^oldestIdx
 //	                                       (oldest-to-newest: A, B, C)
 //
-// Example B — wrapped (cap=5, back=3, len=4):
+// Example B — wrapped (cap=5, oldestIdx=3, len=4):
 //
 //	physical:    0     1     2     3     4
 //	window:    [ C  |  D  |  _  |  A  |  B ]
-//	                              ^back
+//	                              ^oldestIdx
 //	                                       (oldest-to-newest: A, B, C, D)
 //
 // In both cases, the i-th live item (oldest-to-newest) sits at physical
-// index (back + i) mod cap.
+// index (oldestIdx + i) mod cap.
 //
 // # Invariants
 //
 // Buf maintains the following invariants at every public-method boundary:
 //
 //   - 0 <= len <= len(window)
-//   - When len > 0: back ∈ [0, len(window)) and points to the oldest live
-//     item; the newest live item is at (back + len - 1) mod len(window).
-//   - When len == 0: back has no semantic meaning. Callers must not depend
-//     on its value; the implementation happens to pin it to 0 on every path
-//     that empties the buffer, but that is not part of the contract.
+//   - When len > 0: oldestIdx ∈ [0, len(window)) and points to the oldest
+//     live item; the newest live item is at
+//     (oldestIdx + len - 1) mod len(window).
+//   - When len == 0: oldestIdx has no semantic meaning. Callers must not
+//     depend on its value; the implementation happens to pin it to 0 on
+//     every path that empties the buffer, but that is not part of the
+//     contract.
 //   - offset never decreases except across [Buf.Reset]; it advances on
 //     eviction-on-write (including the implicit eviction on every
 //     [Buf.Write] / [Buf.WriteAll] against a zero-capacity buffer), on
@@ -182,16 +184,23 @@ type Buf[T any] struct {
 	// observable through the public API.
 	window []T
 
-	// back is the physical index in window of the oldest live item.
+	// oldestIdx is the physical index in window of the oldest live item.
 	// Meaningful only when len > 0; otherwise its value is undefined (the
 	// implementation pins it to 0 on every emptying path, but callers
 	// must not rely on that).
 	//
-	// There is no parallel "front" field: the newest live item sits at
-	// (back + len - 1) mod len(window) and is derived on demand. A single
-	// cursor + len is enough to describe the ring; carrying both ends
-	// invites coherence bugs around the empty state.
-	back int
+	// Name choice: this is "the back of the tail" in the package's
+	// vocabulary, so [Buf.Back] returns window[oldestIdx]. Naming the
+	// field oldestIdx (rather than back) avoids a maintainer-trap where
+	// "back the cursor" is read as "the newest end" — common ring-buffer
+	// literature uses head/tail to mean read/write ends in the opposite
+	// orientation, so the explicit name removes that confusion.
+	//
+	// There is no parallel "newestIdx" field: the newest live item sits at
+	// (oldestIdx + len - 1) mod len(window) and is derived on demand. A
+	// single cursor + len is enough to describe the ring; carrying both
+	// ends invites coherence bugs around the empty state.
+	oldestIdx int
 
 	// len is the number of live items in the tail window; always in
 	// [0, len(window)].
@@ -280,10 +289,10 @@ func (b *Buf[T]) WriteAll(items ...T) *Buf[T] {
 // The three cases (empty / full / partial) cover every reachable state of
 // the buffer:
 //
-//   - empty:   no live items; place at window[0] and pin back=0.
-//   - full:    overwrite the slot at back, then advance back and offset.
-//             The just-written slot is now the newest live item; back has
-//             moved on to what used to be the second-oldest.
+//   - empty:   no live items; place at window[0] and pin oldestIdx=0.
+//   - full:    overwrite the slot at oldestIdx, then advance oldestIdx and
+//             offset. The just-written slot is now the newest live item;
+//             oldestIdx has moved on to what used to be the second-oldest.
 //   - partial: place just past the current front; bump len.
 //
 // The eviction predicate is `b.len == cap`. A predicate over written (e.g.
@@ -294,25 +303,25 @@ func (b *Buf[T]) write(item T) {
 	winLen := len(b.window)
 	switch b.len {
 	case 0:
-		// First item into an empty tail. We pin back to 0 so the storage
+		// First item into an empty tail. We pin oldestIdx to 0 so the storage
 		// fills sequentially when starting fresh; this also makes the
 		// slice returned by Tail() share storage with window in the simple
 		// no-wrap case.
-		b.back = 0
+		b.oldestIdx = 0
 		b.window[0] = item
 		b.len = 1
 	case winLen:
 		// Tail at capacity; the new item is written into the slot currently
-		// holding the oldest live item, evicting it. We then advance back so
-		// that slot is the newest position and the next-oldest item is the
-		// new "back". Offset bumps because the evicted item leaves the
-		// nominal range entirely.
-		b.window[b.back] = item
-		b.back = (b.back + 1) % winLen
+		// holding the oldest live item, evicting it. We then advance
+		// oldestIdx so that slot is the newest position and the
+		// next-oldest item becomes the new oldest. Offset bumps because
+		// the evicted item leaves the nominal range entirely.
+		b.window[b.oldestIdx] = item
+		b.oldestIdx = (b.oldestIdx + 1) % winLen
 		b.offset++
 	default:
 		// Room remaining; place item just past the current front.
-		b.window[(b.back+b.len)%winLen] = item
+		b.window[(b.oldestIdx+b.len)%winLen] = item
 		b.len++
 	}
 }
@@ -383,21 +392,24 @@ func (b *Buf[T]) Bounds() (start, end int) {
 	return b.offset, b.offset + b.len
 }
 
-// InBounds reports whether the nominal index i corresponds to a live item in
-// the tail window. Equivalent to:
+// InBounds reports whether nominalIndex corresponds to a live item in the
+// tail window. The argument is in nominal-index space (see [Buf.Bounds] /
+// [Buf.Offset]), NOT the tail-relative space accepted by [Buf.Peek].
+// Equivalent to:
 //
 //	start, end := b.Bounds()
-//	b.Len() > 0 && i >= start && i < end
+//	b.Len() > 0 && nominalIndex >= start && nominalIndex < end
 //
-// InBounds returns false when the buffer is empty, when i is negative, when
-// i is below the current [Buf.Offset] (the item has been evicted or popped
-// from the back), and when i is at or beyond [Buf.Offset] + [Buf.Len] (the
-// item was never live, or was popped from the front).
-func (b *Buf[T]) InBounds(i int) bool {
-	if b.len == 0 || i < 0 {
+// InBounds returns false when the buffer is empty, when nominalIndex is
+// negative, when it is below the current [Buf.Offset] (the item has been
+// evicted or popped from the back), and when it is at or beyond
+// [Buf.Offset] + [Buf.Len] (the item was never live, or was popped from
+// the front).
+func (b *Buf[T]) InBounds(nominalIndex int) bool {
+	if b.len == 0 || nominalIndex < 0 {
 		return false
 	}
-	return i >= b.offset && i < b.offset+b.len
+	return nominalIndex >= b.offset && nominalIndex < b.offset+b.len
 }
 
 // Front returns the newest live item, or the zero value of T when the tail
@@ -405,7 +417,7 @@ func (b *Buf[T]) InBounds(i int) bool {
 // removing variant.
 //
 // Empty-check uses [Buf.Len] rather than any sentinel value on the
-// back/front cursors. This makes a zero-value Buf safe to call Front on:
+// oldest-item cursor. This makes a zero-value Buf safe to call Front on:
 // len defaults to 0 there, the empty branch fires, and the nil internal
 // window is never indexed.
 func (b *Buf[T]) Front() T {
@@ -413,7 +425,7 @@ func (b *Buf[T]) Front() T {
 		var zero T
 		return zero
 	}
-	return b.window[(b.back+b.len-1)%len(b.window)]
+	return b.window[(b.oldestIdx+b.len-1)%len(b.window)]
 }
 
 // Back returns the oldest live item, or the zero value of T when the tail is
@@ -424,12 +436,15 @@ func (b *Buf[T]) Back() T {
 		var zero T
 		return zero
 	}
-	return b.window[b.back]
+	return b.window[b.oldestIdx]
 }
 
-// Peek returns the n-th item in the tail window, counting from the oldest
-// (n=0 is [Buf.Back], n=[Buf.Len]-1 is [Buf.Front]). Panics if n is negative,
-// n >= [Buf.Len], or the tail is empty.
+// Peek returns the item at the given tail-relative index, counting from
+// the oldest live item (tailIndex=0 is [Buf.Back], tailIndex=[Buf.Len]-1
+// is [Buf.Front]). The argument is in tail-relative space, NOT the
+// nominal-index space used by [Buf.InBounds] / [Buf.Bounds] / [Buf.Offset].
+// Panics if tailIndex is negative, tailIndex >= [Buf.Len], or the tail is
+// empty.
 //
 // Peek is O(1) and does not allocate.
 //
@@ -438,11 +453,11 @@ func (b *Buf[T]) Back() T {
 //	if buf.InBounds(nominal) {
 //	    item := buf.Peek(nominal - buf.Offset())
 //	}
-func (b *Buf[T]) Peek(n int) T {
-	if n < 0 || n >= b.len {
+func (b *Buf[T]) Peek(tailIndex int) T {
+	if tailIndex < 0 || tailIndex >= b.len {
 		panic("tailbuf: Peek out of bounds")
 	}
-	return b.window[(b.back+n)%len(b.window)]
+	return b.window[(b.oldestIdx+tailIndex)%len(b.window)]
 }
 
 // Tail returns a slice containing the items currently in the tail window, in
@@ -462,7 +477,7 @@ func (b *Buf[T]) Peek(n int) T {
 // fresh backing array rather than silently writing into the ring past the
 // live region, so callers cannot accidentally corrupt internal state.
 // (Pre-cap behavior: append would overwrite window slots that Buf still
-// considered free, breaking len / back / offset coherence.)
+// considered free, breaking len / oldestIdx / offset coherence.)
 //
 // When the live items wrap, Tail allocates a fresh slice; the returned
 // slice is independent of the buffer.
@@ -488,15 +503,15 @@ func (b *Buf[T]) Tail() []T {
 		return []T{}
 	}
 	winLen := len(b.window)
-	front := (b.back + b.len - 1) % winLen
-	if b.back <= front {
-		// No wrap: live items occupy window[back .. front+1]. Returning a
-		// sub-slice of the underlying storage with a 3-index full-slice
+	front := (b.oldestIdx + b.len - 1) % winLen
+	if b.oldestIdx <= front {
+		// No wrap: live items occupy window[oldestIdx .. front+1]. Returning
+		// a sub-slice of the underlying storage with a 3-index full-slice
 		// expression pins cap == len, so append allocates fresh rather
 		// than clobbering window[front+1] and beyond.
-		return b.window[b.back : front+1 : front+1]
+		return b.window[b.oldestIdx : front+1 : front+1]
 	}
-	// Wrapped: the live items span window[back:cap] + window[0:front+1].
+	// Wrapped: live items span window[oldestIdx:cap] + window[0:front+1].
 	// We must allocate a fresh slice to present them contiguously.
 	return b.tailNewSlice()
 }
@@ -511,7 +526,7 @@ func (b *Buf[T]) tailNewSlice() []T {
 	winLen := len(b.window)
 	s := make([]T, b.len)
 	for i := 0; i < b.len; i++ {
-		s[i] = b.window[(b.back+i)%winLen]
+		s[i] = b.window[(b.oldestIdx+i)%winLen]
 	}
 	return s
 }
@@ -528,7 +543,7 @@ func (b *Buf[T]) zeroTail() {
 	var zero T
 	winLen := len(b.window)
 	for i := 0; i < b.len; i++ {
-		b.window[(b.back+i)%winLen] = zero
+		b.window[(b.oldestIdx+i)%winLen] = zero
 	}
 }
 
@@ -543,7 +558,7 @@ func (b *Buf[T]) zeroTail() {
 // counters.
 func (b *Buf[T]) Reset() *Buf[T] {
 	b.zeroTail()
-	b.back = 0
+	b.oldestIdx = 0
 	b.len = 0
 	b.offset = 0
 	b.written = 0
@@ -563,7 +578,7 @@ func (b *Buf[T]) Reset() *Buf[T] {
 func (b *Buf[T]) Clear() *Buf[T] {
 	b.zeroTail()
 	b.offset += b.len
-	b.back = 0
+	b.oldestIdx = 0
 	b.len = 0
 	return b
 }
@@ -583,7 +598,7 @@ func (b *Buf[T]) PopFront() T {
 		var zero T
 		return zero
 	}
-	idx := (b.back + b.len - 1) % len(b.window)
+	idx := (b.oldestIdx + b.len - 1) % len(b.window)
 	item := b.window[idx]
 	var zero T
 	b.window[idx] = zero
@@ -609,7 +624,7 @@ func (b *Buf[T]) PopFrontN(n int) []T {
 		b.zeroTail()
 		// We deliberately do NOT bump b.offset (PopFront semantics shrink
 		// from the front). We also don't call Clear, which would.
-		b.back = 0
+		b.oldestIdx = 0
 		b.len = 0
 		return s
 	}
@@ -621,7 +636,7 @@ func (b *Buf[T]) PopFrontN(n int) []T {
 	base := b.len - n
 	var zero T
 	for i := 0; i < n; i++ {
-		idx := (b.back + base + i) % winLen
+		idx := (b.oldestIdx + base + i) % winLen
 		s[i] = b.window[idx]
 		b.window[idx] = zero
 	}
@@ -639,10 +654,10 @@ func (b *Buf[T]) PopBack() T {
 		var zero T
 		return zero
 	}
-	item := b.window[b.back]
+	item := b.window[b.oldestIdx]
 	var zero T
-	b.window[b.back] = zero
-	b.back = (b.back + 1) % len(b.window)
+	b.window[b.oldestIdx] = zero
+	b.oldestIdx = (b.oldestIdx + 1) % len(b.window)
 	b.len--
 	b.offset++
 	return item
@@ -672,9 +687,9 @@ func (b *Buf[T]) PopBackN(n int) []T {
 	s := make([]T, n)
 	var zero T
 	for i := 0; i < n; i++ {
-		s[i] = b.window[b.back]
-		b.window[b.back] = zero
-		b.back = (b.back + 1) % winLen
+		s[i] = b.window[b.oldestIdx]
+		b.window[b.oldestIdx] = zero
+		b.oldestIdx = (b.oldestIdx + 1) % winLen
 	}
 	b.len -= n
 	b.offset += n
@@ -694,8 +709,8 @@ func (b *Buf[T]) DropBack() {
 		return
 	}
 	var zero T
-	b.window[b.back] = zero
-	b.back = (b.back + 1) % len(b.window)
+	b.window[b.oldestIdx] = zero
+	b.oldestIdx = (b.oldestIdx + 1) % len(b.window)
 	b.len--
 	b.offset++
 }
@@ -719,8 +734,8 @@ func (b *Buf[T]) DropBackN(n int) {
 	winLen := len(b.window)
 	var zero T
 	for i := 0; i < n; i++ {
-		b.window[b.back] = zero
-		b.back = (b.back + 1) % winLen
+		b.window[b.oldestIdx] = zero
+		b.oldestIdx = (b.oldestIdx + 1) % winLen
 	}
 	b.len -= n
 	b.offset += n
@@ -754,13 +769,13 @@ func (b *Buf[T]) DropBackN(n int) {
 // The implementation uses uniform modular indexing — exactly len iterations,
 // no special-case fork on whether the live items wrap. A simpler-looking
 // "no-wrap branch + wrapped branch" structure has to disambiguate cases
-// like len == 1 (where the back/front cursors coincide) and post-pop wraps
+// like len == 1 (where the oldest and newest cursors coincide) and post-pop wraps
 // (which the wrapped branch can miscount), and getting that right is
 // fragile.
 func (b *Buf[T]) Apply(fn func(item T) T) *Buf[T] {
 	winLen := len(b.window)
 	for i := 0; i < b.len; i++ {
-		idx := (b.back + i) % winLen
+		idx := (b.oldestIdx + i) % winLen
 		b.window[idx] = fn(b.window[idx])
 	}
 	return b
@@ -814,7 +829,7 @@ func (b *Buf[T]) Do(ctx context.Context, fn func(ctx context.Context, item T, in
 	tailOffset := b.offset
 	winLen := len(b.window)
 	for i := 0; i < b.len; i++ {
-		idx := (b.back + i) % winLen
+		idx := (b.oldestIdx + i) % winLen
 		v, err := fn(ctx, b.window[idx], i, tailOffset)
 		if err != nil {
 			// Halt without writing v back: positions [0, i) keep the values
@@ -915,7 +930,7 @@ func SliceTail[T any](b *Buf[T], start, end int) []T {
 	winLen := len(b.window)
 	s := make([]T, n)
 	for i := 0; i < n; i++ {
-		s[i] = b.window[(b.back+start+i)%winLen]
+		s[i] = b.window[(b.oldestIdx+start+i)%winLen]
 	}
 	return s
 }
