@@ -1689,27 +1689,30 @@ func TestInvariantWalker(t *testing.T) {
 	buf := tailbuf.New[int](4)
 	tailbuf.CheckInvariants(t, buf)
 
+	// Field order: pointer-only field first (do), pointer+len field second
+	// (name). Reverses fieldalignment lint by keeping the two GC-scanned
+	// pointer slots contiguous at the head of the struct.
 	steps := []struct {
-		name string
 		do   func()
+		name string
 	}{
-		{"Write 1", func() { buf.Write(1) }},
-		{"Write 2", func() { buf.Write(2) }},
-		{"WriteAll 3,4", func() { buf.WriteAll(3, 4) }},
-		{"Write 5 (eviction)", func() { buf.Write(5) }},
-		{"PopFront", func() { buf.PopFront() }},
-		{"Write 6", func() { buf.Write(6) }},
-		{"PopBack", func() { buf.PopBack() }},
-		{"DropBack", func() { buf.DropBack() }},
-		{"PopFrontN(2)", func() { buf.PopFrontN(2) }},
-		{"WriteAll 7,8,9,10,11", func() { buf.WriteAll(7, 8, 9, 10, 11) }},
-		{"PopBackN(2)", func() { buf.PopBackN(2) }},
-		{"DropBackN(99)", func() { buf.DropBackN(99) }},
-		{"WriteAll 12,13", func() { buf.WriteAll(12, 13) }},
-		{"Clear", func() { buf.Clear() }},
-		{"Write 14", func() { buf.Write(14) }},
-		{"Reset", func() { buf.Reset() }},
-		{"Write 15", func() { buf.Write(15) }},
+		{func() { buf.Write(1) }, "Write 1"},
+		{func() { buf.Write(2) }, "Write 2"},
+		{func() { buf.WriteAll(3, 4) }, "WriteAll 3,4"},
+		{func() { buf.Write(5) }, "Write 5 (eviction)"},
+		{func() { buf.PopFront() }, "PopFront"},
+		{func() { buf.Write(6) }, "Write 6"},
+		{func() { buf.PopBack() }, "PopBack"},
+		{func() { buf.DropBack() }, "DropBack"},
+		{func() { buf.PopFrontN(2) }, "PopFrontN(2)"},
+		{func() { buf.WriteAll(7, 8, 9, 10, 11) }, "WriteAll 7,8,9,10,11"},
+		{func() { buf.PopBackN(2) }, "PopBackN(2)"},
+		{func() { buf.DropBackN(99) }, "DropBackN(99)"},
+		{func() { buf.WriteAll(12, 13) }, "WriteAll 12,13"},
+		{func() { buf.Clear() }, "Clear"},
+		{func() { buf.Write(14) }, "Write 14"},
+		{func() { buf.Reset() }, "Reset"},
+		{func() { buf.Write(15) }, "Write 15"},
 	}
 	for _, step := range steps {
 		step.do()
