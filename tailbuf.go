@@ -118,9 +118,10 @@
 //
 // Mutation (selective remove):
 //
-//	PopFront, PopFrontN  — remove from the newest end (no Offset change)
-//	PopBack,  PopBackN   — remove from the oldest end (Offset advances)
-//	DropBack, DropBackN  — like PopBack/PopBackN but discard the result
+//	PopFront,  PopFrontN  — remove from the newest end (no Offset change)
+//	PopBack,   PopBackN   — remove from the oldest end (Offset advances)
+//	DropFront, DropFrontN — like PopFront/PopFrontN but discard the result
+//	DropBack,  DropBackN  — like PopBack/PopBackN but discard the result
 //
 // Mutation (bulk empty):
 //
@@ -612,8 +613,9 @@ func (b *Buf[T]) Clear() *Buf[T] {
 // the nominal index that the popped item had (see the package documentation
 // for the consequences).
 //
-// See also: [Buf.PopFrontN] for the bulk variant; [Buf.Front] for a
-// non-removing peek at the same item.
+// See also: [Buf.PopFrontN] for the bulk variant; [Buf.DropFront] when the
+// returned value is not needed; [Buf.Front] for a non-removing peek at the
+// same item.
 func (b *Buf[T]) PopFront() T {
 	if b.len == 0 {
 		var zero T
@@ -644,6 +646,8 @@ func (b *Buf[T]) PopFront() T {
 // all items. The returned slice is freshly allocated.
 //
 // PopFrontN does NOT change [Buf.Offset]; same caveat as [Buf.PopFront].
+//
+// See also: [Buf.DropFrontN] when the returned values are not needed.
 func (b *Buf[T]) PopFrontN(n int) []T {
 	if b.len == 0 || n < 1 {
 		return []T{}
@@ -727,6 +731,64 @@ func (b *Buf[T]) PopBackN(n int) []T {
 	b.len -= n
 	b.offset += n
 	return s
+}
+
+// DropFront removes the newest live item without returning it. It is a
+// no-op when the tail is empty.
+//
+// DropFront is identical to [Buf.PopFront] except that it does not return
+// the removed item; prefer it when the caller doesn't need the value back.
+// Like PopFront, it does NOT advance [Buf.Offset]; the tail window simply
+// shrinks from its newest end.
+//
+// See also: [Buf.PopFront], [Buf.DropFrontN].
+func (b *Buf[T]) DropFront() {
+	if b.len == 0 {
+		return
+	}
+	idx := (b.oldestIdx + b.len - 1) % len(b.window)
+	var zero T
+	b.window[idx] = zero
+	b.len--
+	if b.len == 0 {
+		// See PopFront for the rationale; same canonical-empty pin.
+		b.oldestIdx = 0
+	}
+}
+
+// DropFrontN removes up to n newest items without returning them. n <= 0
+// is a no-op; n >= [Buf.Len] empties the tail.
+//
+// DropFrontN is identical to [Buf.PopFrontN] except that it does not
+// allocate or return the removed items; prefer it when the caller doesn't
+// need the values back. Like PopFrontN, it does NOT advance [Buf.Offset].
+//
+// See also: [Buf.PopFrontN], [Buf.DropFront].
+func (b *Buf[T]) DropFrontN(n int) {
+	if b.len == 0 || n < 1 {
+		return
+	}
+	if n >= b.len {
+		b.zeroTail()
+		// Same caveat as PopFrontN: do NOT bump b.offset (PopFront
+		// semantics shrink from the front), and don't call Clear which
+		// would. Pin oldestIdx to 0 explicitly to match the canonical-
+		// empty invariant.
+		b.oldestIdx = 0
+		b.len = 0
+		return
+	}
+
+	winLen := len(b.window)
+	// Zero the n newest slots in place. They occupy tail-relative
+	// positions [len-n, len).
+	base := b.len - n
+	var zero T
+	for i := 0; i < n; i++ {
+		idx := (b.oldestIdx + base + i) % winLen
+		b.window[idx] = zero
+	}
+	b.len -= n
 }
 
 // DropBack removes the oldest live item, advancing [Buf.Offset] by one. It
