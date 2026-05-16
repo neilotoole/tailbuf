@@ -2450,3 +2450,335 @@ func TestApplyDo_NilFnPanicsUniformlyAcrossStates(t *testing.T) {
 		})
 	})
 }
+
+// TestPopBack_PopBackN_Equivalence_Wrapped is the back-end mirror of
+// TestPopFront_PopFrontN_Equivalence_Wrapped. The non-wrapped equivalence
+// test alone (TestPopBack_PopBackN_Equivalence) leaves the modular-index
+// arithmetic in PopBackN's partial path underexercised: in that test
+// oldestIdx=0 and oldestIdx advances along the physical end of the
+// window without ever wrapping back to 0. Running the same equivalence
+// in a wrapped state forces the modular reduction to do real work,
+// which is where a regression in PopBackN's loop math would actually
+// manifest.
+func TestPopBack_PopBackN_Equivalence_Wrapped(t *testing.T) {
+	// cap=5 + 8 writes ⇒ oldestIdx=3, live items wrap the physical end.
+	// Tail at this point is [4,5,6,7,8]; the partial PopBackN(3) below
+	// must remove 4,5,6 in oldest-to-newest order. The third item (6)
+	// sits at physical index 0, which is where the modular wrap fires.
+	all := []int{1, 2, 3, 4, 5, 6, 7, 8}
+	buf1 := tailbuf.New[int](5).WriteAll(all...)
+	buf2 := tailbuf.New[int](5).WriteAll(all...)
+	require.Equal(t, []int{4, 5, 6, 7, 8}, buf1.Tail())
+
+	popped1 := buf1.PopBackN(3)
+	popped2 := make([]int, 0, 3)
+	for i := 0; i < 3; i++ {
+		popped2 = append(popped2, buf2.PopBack())
+	}
+
+	require.Equal(t, []int{4, 5, 6}, popped1,
+		"PopBackN must return removed items oldest-to-newest")
+	require.Equal(t, popped1, popped2,
+		"PopBackN(n) and n×PopBack must yield the same result")
+	require.Equal(t, []int{7, 8}, buf1.Tail(),
+		"surviving tail must be the n-newest items in order")
+	require.Equal(t, 6, buf1.Offset(),
+		"Offset must advance by exactly n (initial 3 from eviction-on-write + 3 from PopBackN)")
+	tailbuf.RequireEqualInternalState(t, buf1, buf2)
+	tailbuf.CheckInvariants(t, buf1)
+}
+
+// TestDropBack_DropBackN_Equivalence_Wrapped is the back-end mirror of
+// TestPopFront_PopFrontN_Equivalence_Wrapped for the discard variant.
+// DropBackN shares the modular-index loop with PopBackN but does not
+// build the return slice, so its loop body has a slightly different
+// shape; pin the equivalence with n×DropBack on the same wrapped state
+// where PopBackN's path is exercised above.
+func TestDropBack_DropBackN_Equivalence_Wrapped(t *testing.T) {
+	all := []int{1, 2, 3, 4, 5, 6, 7, 8}
+	buf1 := tailbuf.New[int](5).WriteAll(all...)
+	buf2 := tailbuf.New[int](5).WriteAll(all...)
+	require.Equal(t, []int{4, 5, 6, 7, 8}, buf1.Tail())
+
+	buf1.DropBackN(3)
+	for i := 0; i < 3; i++ {
+		buf2.DropBack()
+	}
+
+	require.Equal(t, []int{7, 8}, buf1.Tail(),
+		"surviving tail must be the n-newest items in order")
+	require.Equal(t, 6, buf1.Offset(),
+		"Offset must advance by exactly n (initial 3 from eviction-on-write + 3 from DropBackN)")
+	tailbuf.RequireEqualInternalState(t, buf1, buf2)
+	tailbuf.CheckInvariants(t, buf1)
+}
+
+// TestPopBackN_PartialDrainOnWrappedBuffer is a direct pin on the
+// partial-drain path of PopBackN against a wrapped buffer, asserting
+// not just the equivalence with n×PopBack (covered above) but also the
+// post-drain internal layout: oldestIdx wraps forward by exactly n,
+// the n vacated slots are zeroed, and the surviving n-newest items
+// occupy the expected physical positions. A regression in the loop's
+// zero-and-advance step would survive the equivalence test if both
+// PopBackN and PopBack regressed the same way, but would fail here.
+func TestPopBackN_PartialDrainOnWrappedBuffer(t *testing.T) {
+	// cap=5, write 8 ⇒ window=[6,7,8,4,5], oldestIdx=3, len=5.
+	buf := tailbuf.New[int](5).WriteAll(1, 2, 3, 4, 5, 6, 7, 8)
+	require.Equal(t, []int{4, 5, 6, 7, 8}, buf.Tail())
+
+	got := buf.PopBackN(3)
+	require.Equal(t, []int{4, 5, 6}, got)
+
+	// After popping 3 from the back: oldestIdx should have advanced by 3
+	// modulo 5, so 3+3=6 mod 5 = 1. The surviving items 7,8 sit at
+	// physical indices 1,2. Offset was already 3 from the eviction-on-
+	// write of items 1,2,3 during the initial WriteAll, so PopBackN(3)
+	// bumps it to 6.
+	require.Equal(t, []int{7, 8}, buf.Tail())
+	require.Equal(t, 2, buf.Len())
+	require.Equal(t, 6, buf.Offset())
+	require.Equal(t, 8, buf.Written())
+
+	// The three vacated slots (physical 3,4,0 — the old oldestIdx and
+	// its two successors modulo cap) must be zeroed. The two live slots
+	// (physical 1,2) hold 7,8.
+	require.Equal(t, []int{0, 7, 8, 0, 0}, tailbuf.InternalWindow(buf))
+	tailbuf.CheckInvariants(t, buf)
+}
+
+// TestPeek_PanicsOnZeroValueBuf pins the zero-value safety of Peek's
+// panic path: the bounds check (tailIndex >= b.len, with b.len == 0)
+// must fire before any read of b.window, which is nil for the zero
+// value. A future refactor that reordered the check after a window
+// access would crash with a nil-pointer panic instead of the
+// documented "tailbuf: Peek out of bounds" message; this test pins
+// the message form, not just the fact of panicking.
+func TestPeek_PanicsOnZeroValueBuf(t *testing.T) {
+	t.Run("Peek(0)", func(t *testing.T) {
+		var buf tailbuf.Buf[int]
+		require.PanicsWithValue(t, "tailbuf: Peek out of bounds", func() {
+			_ = buf.Peek(0)
+		})
+	})
+	t.Run("Peek(-1)", func(t *testing.T) {
+		var buf tailbuf.Buf[int]
+		require.PanicsWithValue(t, "tailbuf: Peek out of bounds", func() {
+			_ = buf.Peek(-1)
+		})
+	})
+	t.Run("Peek(1)", func(t *testing.T) {
+		var buf tailbuf.Buf[int]
+		require.PanicsWithValue(t, "tailbuf: Peek out of bounds", func() {
+			_ = buf.Peek(1)
+		})
+	})
+}
+
+// TestClearReset_OnZeroValueBuf pins that the zero-value Buf accepts
+// Clear and Reset without panicking and without observable state
+// change. The zero-tail short-circuit in zeroTail is what makes this
+// safe; a regression that, say, indexed b.window before checking
+// b.len would crash on the nil window. Coverage is achieved
+// transitively via the InvariantWalker_ZeroCap path, but the
+// zero-value-Buf entry point (not New(0)) has its own nil-window
+// nuance worth a direct pin.
+func TestClearReset_OnZeroValueBuf(t *testing.T) {
+	t.Run("Clear", func(t *testing.T) {
+		var buf tailbuf.Buf[int]
+		require.NotPanics(t, func() { _ = buf.Clear() })
+		require.Equal(t, 0, buf.Len())
+		require.Equal(t, 0, buf.Cap())
+		require.Equal(t, 0, buf.Written())
+		require.Equal(t, 0, buf.Offset())
+		tailbuf.CheckInvariants(t, &buf)
+	})
+	t.Run("Reset", func(t *testing.T) {
+		var buf tailbuf.Buf[int]
+		require.NotPanics(t, func() { _ = buf.Reset() })
+		require.Equal(t, 0, buf.Len())
+		require.Equal(t, 0, buf.Cap())
+		require.Equal(t, 0, buf.Written())
+		require.Equal(t, 0, buf.Offset())
+		tailbuf.CheckInvariants(t, &buf)
+	})
+	t.Run("Clear_thenWriteOnZeroCap", func(t *testing.T) {
+		// zero-value Buf is a cap=0 buffer; Clear should not enable
+		// retention. Subsequent Writes still bump Written/Offset and
+		// drop the items, exactly as on an explicit New(0).
+		var buf tailbuf.Buf[int]
+		buf.Clear()
+		buf.Write(7).Write(8)
+		require.Equal(t, 0, buf.Len())
+		require.Equal(t, 2, buf.Written())
+		require.Equal(t, 2, buf.Offset())
+		tailbuf.CheckInvariants(t, &buf)
+	})
+	t.Run("Reset_afterWritesOnZeroCap", func(t *testing.T) {
+		// Reset on the zero-value path returns Written and Offset to
+		// zero, even after cap-0 writes have bumped them.
+		var buf tailbuf.Buf[int]
+		buf.Write(1).Write(2).Write(3)
+		require.Equal(t, 3, buf.Written())
+		buf.Reset()
+		require.Equal(t, 0, buf.Len())
+		require.Equal(t, 0, buf.Written())
+		require.Equal(t, 0, buf.Offset())
+		tailbuf.CheckInvariants(t, &buf)
+	})
+}
+
+// TestWrite_AtCapAndOverCapBoundary isolates the cap→cap+1 transition
+// in the eviction-on-write path. Earlier tests exercise the boundary
+// transitively (via TestBuf's main loop and the invariant walker) but
+// don't pin the exact state immediately before and after the first
+// eviction, where a regression in the "switch on b.len" branch of
+// write() would surface.
+func TestWrite_AtCapAndOverCapBoundary(t *testing.T) {
+	buf := tailbuf.New[int](4)
+	// Drive to exactly cap.
+	buf.WriteAll(1, 2, 3, 4)
+	require.Equal(t, 4, buf.Len())
+	require.Equal(t, 4, buf.Cap())
+	require.Equal(t, 4, buf.Written())
+	require.Equal(t, 0, buf.Offset())
+	require.Equal(t, []int{1, 2, 3, 4}, buf.Tail())
+	require.Equal(t, []int{1, 2, 3, 4}, tailbuf.InternalWindow(buf),
+		"at exactly cap, the no-wrap branch must occupy every slot in order")
+	tailbuf.CheckInvariants(t, buf)
+
+	// One more write: triggers the eviction-on-write branch. The
+	// physical slot previously holding 1 is overwritten with 5;
+	// oldestIdx advances to 1; offset bumps to 1; len stays at cap.
+	buf.Write(5)
+	require.Equal(t, 4, buf.Len())
+	require.Equal(t, 5, buf.Written())
+	require.Equal(t, 1, buf.Offset(),
+		"Offset must advance by exactly 1 at the cap→cap+1 boundary")
+	require.Equal(t, []int{2, 3, 4, 5}, buf.Tail())
+	require.Equal(t, []int{5, 2, 3, 4}, tailbuf.InternalWindow(buf),
+		"the just-written item replaces the oldest physical slot in place")
+	tailbuf.CheckInvariants(t, buf)
+}
+
+// TestWrite_AfterPopBackNDrainsToEmpty pins the interaction between
+// the full-drain PopBackN path (which routes through Clear) and a
+// subsequent Write. The Write must land in a freshly-canonical empty
+// buffer (oldestIdx=0, len=0) and place the item at physical index 0,
+// matching write()'s len==0 branch. A regression that left oldestIdx
+// non-zero after PopBackN's Clear would put the next Write at the
+// stale oldestIdx and the resulting Tail would be wrong even though
+// CheckInvariants would still pass on length grounds.
+func TestWrite_AfterPopBackNDrainsToEmpty(t *testing.T) {
+	// Drive into a wrapped state first so PopBackN's drain has to
+	// converge from a non-trivial oldestIdx.
+	buf := tailbuf.New[int](4).WriteAll(1, 2, 3, 4, 5, 6)
+	require.Equal(t, []int{3, 4, 5, 6}, buf.Tail())
+
+	got := buf.PopBackN(4) // n == Len ⇒ full drain via Clear path.
+	require.Equal(t, []int{3, 4, 5, 6}, got)
+	require.Equal(t, 0, buf.Len())
+	require.Equal(t, 6, buf.Offset(),
+		"Clear's offset bump on full drain must equal the live count")
+	tailbuf.CheckInvariants(t, buf)
+
+	// The next Write must place at physical index 0 (oldestIdx pinned
+	// by Clear) and leave the buffer in canonical post-write state.
+	buf.Write(7)
+	require.Equal(t, 1, buf.Len())
+	require.Equal(t, []int{7}, buf.Tail())
+	require.Equal(t, 7, buf.Written())
+	require.Equal(t, 6, buf.Offset(),
+		"Write after a back-drain must not perturb Offset")
+	require.Equal(t, []int{7, 0, 0, 0}, tailbuf.InternalWindow(buf),
+		"the post-drain Write must land at physical index 0")
+	tailbuf.CheckInvariants(t, buf)
+
+	// And the buffer is fully usable for further writes; drive past cap
+	// to confirm the eviction predicate (b.len == cap) still recovers
+	// correctly from the post-drain state.
+	buf.WriteAll(8, 9, 10, 11)
+	require.Equal(t, []int{8, 9, 10, 11}, buf.Tail())
+	require.Equal(t, 11, buf.Written())
+	require.Equal(t, 7, buf.Offset())
+	tailbuf.CheckInvariants(t, buf)
+}
+
+// TestWrite_AfterDropBackNDrainsToEmpty mirrors the PopBackN drain
+// test for the discard variant. DropBackN's full-drain branch also
+// routes through Clear; pin the same post-drain Write behavior so a
+// regression in either Drop's drain path or Clear's canonicalization
+// is caught.
+func TestWrite_AfterDropBackNDrainsToEmpty(t *testing.T) {
+	buf := tailbuf.New[int](4).WriteAll(1, 2, 3, 4, 5, 6)
+	require.Equal(t, []int{3, 4, 5, 6}, buf.Tail())
+
+	buf.DropBackN(4)
+	require.Equal(t, 0, buf.Len())
+	require.Equal(t, 6, buf.Offset())
+	tailbuf.CheckInvariants(t, buf)
+
+	buf.Write(7)
+	require.Equal(t, []int{7}, buf.Tail())
+	require.Equal(t, []int{7, 0, 0, 0}, tailbuf.InternalWindow(buf))
+	tailbuf.CheckInvariants(t, buf)
+}
+
+// TestDo_AlreadyCancelledCtx_StillVisitsEveryItem pins the documented
+// contract that "the context is passed through to fn but is not checked
+// between calls". Do must invoke fn for every live item even when the
+// supplied ctx is already cancelled at call time; the cancellation is
+// observable only via fn's own ctx.Err() check, which Do does not
+// perform on the caller's behalf. A future change that added a defensive
+// `if ctx.Err() != nil` check at the top of Do would silently change
+// this contract; this test pins the existing behavior so such a change
+// is loud.
+func TestDo_AlreadyCancelledCtx_StillVisitsEveryItem(t *testing.T) {
+	buf := tailbuf.New[int](4).WriteAll(10, 20, 30, 40)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel BEFORE Do is called.
+	require.ErrorIs(t, ctx.Err(), context.Canceled,
+		"precondition: ctx must already be cancelled")
+
+	visited := make([]int, 0, 4)
+	err := buf.Do(ctx,
+		func(_ context.Context, n, index, _ int) (int, error) {
+			visited = append(visited, n)
+			return n, nil
+		})
+	require.NoError(t, err,
+		"Do must not surface ctx.Err() when fn doesn't check it")
+	require.Equal(t, []int{10, 20, 30, 40}, visited,
+		"Do must invoke fn for every live item regardless of ctx state")
+	require.Equal(t, []int{10, 20, 30, 40}, buf.Tail(),
+		"fn returning its input unchanged must leave the buffer intact")
+	tailbuf.CheckInvariants(t, buf)
+}
+
+// TestDo_AlreadyCancelledCtx_FnObservesAndAborts is the complementary
+// pin: when fn DOES check ctx.Err() and returns it, Do propagates the
+// error and halts. Together with the test above, this triangulates the
+// contract: cancellation is fn-driven, not Do-driven.
+func TestDo_AlreadyCancelledCtx_FnObservesAndAborts(t *testing.T) {
+	buf := tailbuf.New[int](4).WriteAll(10, 20, 30, 40)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	visited := make([]int, 0, 4)
+	err := buf.Do(ctx,
+		func(ctx context.Context, n, index, _ int) (int, error) {
+			if cerr := ctx.Err(); cerr != nil {
+				return 0, cerr
+			}
+			visited = append(visited, n)
+			return n * 10, nil
+		})
+	require.ErrorIs(t, err, context.Canceled,
+		"Do must propagate the error fn returns")
+	require.Empty(t, visited,
+		"fn observed cancellation on the first call and aborted before recording any visit")
+	require.Equal(t, []int{10, 20, 30, 40}, buf.Tail(),
+		"halt-before-first-write must leave the buffer unchanged")
+	tailbuf.CheckInvariants(t, buf)
+}
