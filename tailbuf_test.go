@@ -2847,13 +2847,13 @@ func TestDropFrontN_PartialDrainOnWrappedBuffer(t *testing.T) {
 
 // TestWrite_AfterPopFrontNDrainsToEmpty is the front-side mirror of
 // TestWrite_AfterPopBackNDrainsToEmpty. The full-drain branch in
-// PopFrontN (tailbuf.go:671-683) takes a DIFFERENT code path from the
-// back-side: it sets oldestIdx = 0 inline rather than routing through
-// Clear (because front-pops must not bump Offset). A regression that
-// omitted the inline oldestIdx = 0 pin would leave a stale cursor,
-// the post-drain CheckInvariants would catch it directly, and the
-// post-Write InternalWindow assertion is the end-to-end pin that the
-// next Write lands at physical index 0.
+// PopFrontN (the "n >= b.len" branch) takes a DIFFERENT code path
+// from the back-side: it sets oldestIdx = 0 inline rather than
+// routing through Clear (because front-pops must not bump Offset).
+// A regression that omitted the inline oldestIdx = 0 pin would
+// leave a stale cursor, the post-drain CheckInvariants would catch
+// it directly, and the post-Write InternalWindow assertion is the
+// end-to-end pin that the next Write lands at physical index 0.
 func TestWrite_AfterPopFrontNDrainsToEmpty(t *testing.T) {
 	// Drive into a wrapped state first so the drain has to converge
 	// from a non-trivial oldestIdx.
@@ -2887,11 +2887,12 @@ func TestWrite_AfterPopFrontNDrainsToEmpty(t *testing.T) {
 }
 
 // TestWrite_AfterDropFrontNDrainsToEmpty mirrors the PopFrontN drain
-// test for the discard variant. DropFrontN's full-drain branch
-// (tailbuf.go:789-797) takes the same inline-set-oldestIdx-to-0 path
-// as PopFrontN; pin the same post-drain Write behavior so a regression
-// in either Drop's drain path or the front-side canonicalization
-// (which deliberately does NOT route through Clear) is caught.
+// test for the discard variant. DropFrontN's full-drain branch (the
+// "n >= b.len" branch) takes the same inline-set-oldestIdx-to-0
+// path as PopFrontN; pin the same post-drain Write behavior so a
+// regression in either Drop's drain path or the front-side
+// canonicalization (which deliberately does NOT route through
+// Clear) is caught.
 func TestWrite_AfterDropFrontNDrainsToEmpty(t *testing.T) {
 	buf := tailbuf.New[int](4).WriteAll(1, 2, 3, 4, 5, 6)
 	require.Equal(t, []int{3, 4, 5, 6}, buf.Tail())
