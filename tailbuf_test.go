@@ -2742,7 +2742,7 @@ func TestDo_AlreadyCancelledCtx_StillVisitsEveryItem(t *testing.T) {
 
 	visited := make([]int, 0, 4)
 	err := buf.Do(ctx,
-		func(_ context.Context, n int, _, _ int) (int, error) {
+		func(_ context.Context, n, _, _ int) (int, error) {
 			visited = append(visited, n)
 			return n, nil
 		})
@@ -2767,7 +2767,7 @@ func TestDo_AlreadyCancelledCtx_FnObservesAndAborts(t *testing.T) {
 
 	visited := make([]int, 0, 4)
 	err := buf.Do(ctx,
-		func(ctx context.Context, n int, _, _ int) (int, error) {
+		func(ctx context.Context, n, _, _ int) (int, error) {
 			if cerr := ctx.Err(); cerr != nil {
 				return 0, cerr
 			}
