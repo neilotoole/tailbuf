@@ -2665,9 +2665,12 @@ func TestWrite_AtCapAndOverCapBoundary(t *testing.T) {
 // subsequent Write. The Write must land in a freshly-canonical empty
 // buffer (oldestIdx=0, len=0) and place the item at physical index 0,
 // matching write()'s len==0 branch. A regression that left oldestIdx
-// non-zero after PopBackN's Clear would put the next Write at the
-// stale oldestIdx and the resulting Tail would be wrong even though
-// CheckInvariants would still pass on length grounds.
+// non-zero after PopBackN's Clear would be caught by the post-drain
+// CheckInvariants call below (the walker asserts oldestIdx == 0 when
+// len == 0); the post-Write InternalWindow == [item, 0, 0, 0]
+// assertion is the end-to-end pin that the next Write lands at the
+// expected physical slot, independently of any CheckInvariants
+// changes.
 func TestWrite_AfterPopBackNDrainsToEmpty(t *testing.T) {
 	// Drive into a wrapped state first so PopBackN's drain has to
 	// converge from a non-trivial oldestIdx.
