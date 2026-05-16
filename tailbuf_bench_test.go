@@ -241,12 +241,13 @@ func BenchmarkDropFront_Refill(b *testing.B) {
 // the 0-alloc contract with [b.ReportAllocs] is the contract that
 // distinguishes DropFrontN from PopFrontN at the type level.
 func BenchmarkDropFrontN_Refill(b *testing.B) {
+	batch := make([]int, 16)
 	buf := tailbuf.New[int](1024).WriteAll(make([]int, 1024)...)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		buf.DropFrontN(16)
-		buf.WriteAll(make([]int, 16)...)
+		buf.WriteAll(batch...)
 	}
 }
 
