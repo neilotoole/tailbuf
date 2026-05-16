@@ -115,7 +115,7 @@
 //
 // Mutation (in place):
 //
-//	Apply, Do
+//	Apply, Do            — panic on nil fn
 //
 // Mutation (selective remove):
 //
@@ -248,7 +248,7 @@ type Buf[T any] struct {
 
 	// written counts every successful Write/WriteAll item, including items
 	// that were silently dropped because capacity is zero. It is independent
-	// of offset and len; it is not modified by pops.
+	// of offset and len; no Pop* or Drop* variant modifies it.
 	written int
 }
 
@@ -325,8 +325,8 @@ func (b *Buf[T]) WriteAll(items ...T) *Buf[T] {
 //   - partial: place just past the current front; bump len.
 //
 // The eviction predicate is `b.len == cap`. A predicate over written (e.g.
-// `b.written > cap`) would diverge from len after any PopFront, since
-// PopFront shrinks len but leaves written unchanged.
+// `b.written > cap`) would diverge from len after any front- or back-side
+// Pop or Drop, since those shrink len but leave written unchanged.
 func (b *Buf[T]) write(item T) {
 	b.written++
 	winLen := len(b.window)
@@ -430,7 +430,11 @@ func (b *Buf[T]) Bounds() (start, end int) {
 // Equivalent to:
 //
 //	start, end := b.Bounds()
-//	b.Len() > 0 && nominalIndex >= start && nominalIndex < end
+//	nominalIndex >= start && nominalIndex < end
+//
+// When the buffer is empty, start equals end, so the half-open range is
+// itself empty and the equivalent expression is vacuously false; no
+// separate Len > 0 guard is needed.
 //
 // InBounds returns false when the buffer is empty, when nominalIndex is
 // negative, when it is below the current [Buf.Offset] (the item has been
@@ -529,7 +533,7 @@ func (b *Buf[T]) Peek(tailIndex int) T {
 // storage.
 func (b *Buf[T]) Tail() []T {
 	if b.len == 0 {
-		// Return a non-nil empty slice rather than b.window[:0:0]: the
+		// Return a non-nil empty slice rather than b.window[:0]: the
 		// latter would propagate nilness from the underlying window (nil
 		// for the zero-value Buf, non-nil for New(0)), and that would
 		// make the nil-vs-empty distinction observable through the
@@ -672,7 +676,9 @@ func (b *Buf[T]) PopFrontN(n int) []T {
 		s := b.tailNewSlice()
 		b.zeroTail()
 		// We deliberately do NOT bump b.offset (PopFront semantics shrink
-		// from the front). We also don't call Clear, which would.
+		// from the front). We also don't call Clear, which would. Pin
+		// oldestIdx to 0 explicitly to match the canonical-empty invariant
+		// (see PopFront).
 		b.oldestIdx = 0
 		b.len = 0
 		return s
@@ -861,8 +867,8 @@ func (b *Buf[T]) DropBackN(n int) {
 }
 
 // Apply replaces each item in the tail window with fn(item), in
-// oldest-to-newest order. fn is invoked exactly [Buf.Len] times. Returns b
-// for chaining.
+// oldest-to-newest order. When fn is non-nil, fn is invoked exactly
+// [Buf.Len] times. Returns b for chaining.
 //
 // Apply iterates in place without allocating, and handles wrap
 // transparently. Compared to a hand-rolled loop over [Buf.Tail]: Apply

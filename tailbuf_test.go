@@ -863,7 +863,8 @@ func requireZeroInternalWindow[T any](tb testing.TB, buf *tailbuf.Buf[T]) {
 
 // The Bug-* tests below are regression tests for issues identified during
 // the initial code review. Each test references the bug label used in the
-// review notes and the function-level doc comments in tailbuf.go.
+// review notes; the TestBug<id>_<symptom> naming convention makes the link
+// greppable from this file alone.
 
 // TestBugA1_ApplyOverIteration covers the case where the tail has a single
 // item at a non-zero physical position. The pre-fix Apply iterated over the

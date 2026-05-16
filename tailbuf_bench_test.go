@@ -221,10 +221,13 @@ func BenchmarkPopBack_Refill(b *testing.B) {
 }
 
 // BenchmarkDropFront_Refill mirrors BenchmarkPopFront_Refill for the
-// no-allocation discard variant. The whole point of DropFront is to
-// avoid the value-copy cost of returning the item; this benchmark with
-// [b.ReportAllocs] locks in the "0 allocs/op" contract that justifies
-// DropFront's existence.
+// no-value-copy discard variant. The whole point of DropFront is to
+// avoid the value-copy cost of returning the item; the time delta vs
+// BenchmarkPopFront_Refill is what surfaces that saving. The
+// [b.ReportAllocs] gate additionally pins the 0-alloc contract under
+// steady-state refill — PopFront is also alloc-free for non-pointer T,
+// so the alloc count is a regression guard rather than the
+// differentiator.
 func BenchmarkDropFront_Refill(b *testing.B) {
 	buf := tailbuf.New[int](1024).WriteAll(make([]int, 1024)...)
 	b.ReportAllocs()
