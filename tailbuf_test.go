@@ -2785,3 +2785,128 @@ func TestDo_AlreadyCancelledCtx_FnObservesAndAborts(t *testing.T) {
 		"halt-before-first-write must leave the buffer unchanged")
 	tailbuf.CheckInvariants(t, buf)
 }
+
+// TestPopFrontN_PartialDrainOnWrappedBuffer is the front-side mirror
+// of TestPopBackN_PartialDrainOnWrappedBuffer. The existing wrapped
+// equivalence test (TestPopFront_PopFrontN_Equivalence_Wrapped) catches
+// regressions that diverge PopFrontN from n×PopFront, but a co-
+// regression where both methods regress the same way would slip past
+// it; this test pins the literal post-drain physical layout so a co-
+// regression is loud. The partial-drain loop is also exercised in a
+// state where (oldestIdx + base + i) must traverse the physical wrap
+// during the loop body, not just at the equivalence test's structural
+// state-compare boundary.
+func TestPopFrontN_PartialDrainOnWrappedBuffer(t *testing.T) {
+	// cap=5, write 8 ⇒ window=[6,7,8,4,5], oldestIdx=3, len=5.
+	buf := tailbuf.New[int](5).WriteAll(1, 2, 3, 4, 5, 6, 7, 8)
+	require.Equal(t, []int{4, 5, 6, 7, 8}, buf.Tail())
+
+	got := buf.PopFrontN(3)
+	// PopFrontN returns the n NEWEST items in oldest-to-newest order, so
+	// the returned slice is [6, 7, 8].
+	require.Equal(t, []int{6, 7, 8}, got)
+
+	// The partial-drain loop visits tail-relative positions [2, 5):
+	//   i=0: idx = (3+2+0) % 5 = 0  → zero window[0] (was 6)
+	//   i=1: idx = (3+2+1) % 5 = 1  → zero window[1] (was 7)
+	//   i=2: idx = (3+2+2) % 5 = 2  → zero window[2] (was 8)
+	// oldestIdx and offset are unchanged (PopFrontN shrinks from the
+	// front and does NOT advance Offset, same as PopFront).
+	require.Equal(t, []int{4, 5}, buf.Tail())
+	require.Equal(t, 2, buf.Len())
+	require.Equal(t, 3, buf.Offset(),
+		"PopFrontN must NOT advance Offset (front-side shrink)")
+	require.Equal(t, 8, buf.Written())
+	require.Equal(t, []int{0, 0, 0, 4, 5}, tailbuf.InternalWindow(buf),
+		"the three vacated slots (newest end of the live region) must be zeroed")
+	tailbuf.CheckInvariants(t, buf)
+}
+
+// TestDropFrontN_PartialDrainOnWrappedBuffer is the discard variant.
+// DropFrontN's partial-drain loop is shape-identical to PopFrontN's
+// minus the return-slice allocation; the existing "DropFrontN partial
+// drain matches PopFrontN" subtest only exercises n=1, which makes
+// the loop's modular reduction trivial (the loop body runs once with
+// i=0 and idx = oldestIdx+base). This test exercises the multi-step
+// reduction across the physical wrap.
+func TestDropFrontN_PartialDrainOnWrappedBuffer(t *testing.T) {
+	buf := tailbuf.New[int](5).WriteAll(1, 2, 3, 4, 5, 6, 7, 8)
+	require.Equal(t, []int{4, 5, 6, 7, 8}, buf.Tail())
+
+	buf.DropFrontN(3)
+
+	require.Equal(t, []int{4, 5}, buf.Tail())
+	require.Equal(t, 2, buf.Len())
+	require.Equal(t, 3, buf.Offset(),
+		"DropFrontN must NOT advance Offset (front-side shrink)")
+	require.Equal(t, 8, buf.Written())
+	require.Equal(t, []int{0, 0, 0, 4, 5}, tailbuf.InternalWindow(buf),
+		"the three vacated slots (newest end of the live region) must be zeroed")
+	tailbuf.CheckInvariants(t, buf)
+}
+
+// TestWrite_AfterPopFrontNDrainsToEmpty is the front-side mirror of
+// TestWrite_AfterPopBackNDrainsToEmpty. The full-drain branch in
+// PopFrontN (tailbuf.go:671-683) takes a DIFFERENT code path from the
+// back-side: it sets oldestIdx = 0 inline rather than routing through
+// Clear (because front-pops must not bump Offset). A regression that
+// omitted the inline oldestIdx = 0 pin would leave a stale cursor,
+// the post-drain CheckInvariants would catch it directly, and the
+// post-Write InternalWindow assertion is the end-to-end pin that the
+// next Write lands at physical index 0.
+func TestWrite_AfterPopFrontNDrainsToEmpty(t *testing.T) {
+	// Drive into a wrapped state first so the drain has to converge
+	// from a non-trivial oldestIdx.
+	buf := tailbuf.New[int](4).WriteAll(1, 2, 3, 4, 5, 6)
+	require.Equal(t, []int{3, 4, 5, 6}, buf.Tail())
+	require.Equal(t, 2, buf.Offset(),
+		"precondition: initial eviction-on-write has bumped Offset to 2")
+
+	got := buf.PopFrontN(4) // n == Len ⇒ full drain via inline branch.
+	require.Equal(t, []int{3, 4, 5, 6}, got)
+	require.Equal(t, 0, buf.Len())
+	require.Equal(t, 2, buf.Offset(),
+		"full PopFrontN drain must NOT bump Offset (front-side shrink)")
+	require.Equal(t, 6, buf.Written())
+	tailbuf.CheckInvariants(t, buf)
+
+	// The next Write must place at physical index 0 (oldestIdx pinned
+	// by PopFrontN's full-drain branch) and leave the buffer in
+	// canonical post-write state. Offset stays at 2 because front-pops
+	// do not advance it — distinct from the back-side mirror test
+	// where Clear bumps Offset by the live count.
+	buf.Write(7)
+	require.Equal(t, 1, buf.Len())
+	require.Equal(t, []int{7}, buf.Tail())
+	require.Equal(t, 7, buf.Written())
+	require.Equal(t, 2, buf.Offset(),
+		"Write after a front-drain must not perturb Offset")
+	require.Equal(t, []int{7, 0, 0, 0}, tailbuf.InternalWindow(buf),
+		"the post-drain Write must land at physical index 0")
+	tailbuf.CheckInvariants(t, buf)
+}
+
+// TestWrite_AfterDropFrontNDrainsToEmpty mirrors the PopFrontN drain
+// test for the discard variant. DropFrontN's full-drain branch
+// (tailbuf.go:789-797) takes the same inline-set-oldestIdx-to-0 path
+// as PopFrontN; pin the same post-drain Write behavior so a regression
+// in either Drop's drain path or the front-side canonicalization
+// (which deliberately does NOT route through Clear) is caught.
+func TestWrite_AfterDropFrontNDrainsToEmpty(t *testing.T) {
+	buf := tailbuf.New[int](4).WriteAll(1, 2, 3, 4, 5, 6)
+	require.Equal(t, []int{3, 4, 5, 6}, buf.Tail())
+	require.Equal(t, 2, buf.Offset())
+
+	buf.DropFrontN(4)
+	require.Equal(t, 0, buf.Len())
+	require.Equal(t, 2, buf.Offset(),
+		"full DropFrontN drain must NOT bump Offset (front-side shrink)")
+	tailbuf.CheckInvariants(t, buf)
+
+	buf.Write(7)
+	require.Equal(t, []int{7}, buf.Tail())
+	require.Equal(t, 2, buf.Offset(),
+		"Write after a front-drain must not perturb Offset")
+	require.Equal(t, []int{7, 0, 0, 0}, tailbuf.InternalWindow(buf))
+	tailbuf.CheckInvariants(t, buf)
+}
