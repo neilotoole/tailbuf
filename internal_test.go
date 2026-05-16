@@ -25,6 +25,10 @@ func TailNewSlice[T any](b *Buf[T]) []T {
 //
 // Asserted invariants (a subset of those documented on Buf):
 //
+//   - len(window) == cap(window): storage is never re-sliced behind its
+//     own header; a refactor that allocates a smaller-cap window and
+//     silently relies on Cap() returning the slice length would slip
+//     past, but Buf's whole indexing model would still be wrong.
 //   - 0 <= len <= cap
 //   - When len > 0: oldestIdx ∈ [0, cap)
 //   - When len == 0: oldestIdx == 0 (the canonical-empty invariant
@@ -41,6 +45,9 @@ func TailNewSlice[T any](b *Buf[T]) []T {
 func CheckInvariants[T any](tb testing.TB, b *Buf[T]) {
 	tb.Helper()
 	winLen := len(b.window)
+	require.Equal(tb, winLen, cap(b.window),
+		"len(window) (%d) must equal cap(window) (%d): storage must not be re-sliced",
+		winLen, cap(b.window))
 	require.GreaterOrEqual(tb, b.len, 0, "len must be >= 0")
 	require.LessOrEqual(tb, b.len, winLen, "len (%d) must be <= cap (%d)", b.len, winLen)
 	if b.len > 0 {

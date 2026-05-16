@@ -1150,14 +1150,18 @@ func TestBugA7_ZeroValueBuf(t *testing.T) {
 }
 
 // TestBugA8_NewPanicMessage verifies the panic message for a negative
-// capacity no longer contains the development FIXME string.
+// capacity is non-empty and meaningful (mentions capacity), and does not
+// leak the development FIXME marker that the A8 fix removed.
 func TestBugA8_NewPanicMessage(t *testing.T) {
 	defer func() {
 		r := recover()
 		require.NotNil(t, r)
 		msg, ok := r.(string)
 		require.True(t, ok)
-		require.NotContains(t, msg, "FIXME")
+		require.Contains(t, msg, "capacity",
+			"panic message must name what was wrong with the input")
+		require.NotContains(t, msg, "FIXME",
+			"panic message must not leak development markers")
 	}()
 	_ = tailbuf.New[int](-1)
 }
@@ -2196,14 +2200,31 @@ func TestPeekFrontBack_AfterPopFront(t *testing.T) {
 // as "returns b for chaining" actually return the receiver. A future
 // refactor that swapped any of them to return a new *Buf (or nil) would
 // break chained call sites silently.
+//
+// Each method is checked twice: once on a fresh (empty) buffer, and once
+// on a wrapped buffer. A hypothetical regression that returned the
+// receiver only in one of those branches (e.g. an early-return path that
+// returned nil on empty) would otherwise slip past.
 func TestChaining_ReturnsReceiver(t *testing.T) {
-	buf := tailbuf.New[int](3)
+	t.Run("fresh", func(t *testing.T) {
+		buf := tailbuf.New[int](3)
+		require.Same(t, buf, buf.Write(1))
+		require.Same(t, buf, buf.WriteAll(2, 3))
+		require.Same(t, buf, buf.Apply(func(n int) int { return n }))
+		require.Same(t, buf, buf.Reset())
+		require.Same(t, buf, buf.Clear())
+	})
 
-	require.Same(t, buf, buf.Write(1))
-	require.Same(t, buf, buf.WriteAll(2, 3))
-	require.Same(t, buf, buf.Apply(func(n int) int { return n }))
-	require.Same(t, buf, buf.Reset())
-	require.Same(t, buf, buf.Clear())
+	t.Run("wrapped", func(t *testing.T) {
+		// cap=3 plus 4 writes ⇒ oldestIdx=1, live items span the
+		// physical end of window.
+		buf := tailbuf.New[int](3).WriteAll(1, 2, 3, 4)
+		require.Same(t, buf, buf.Write(5))
+		require.Same(t, buf, buf.WriteAll(6, 7))
+		require.Same(t, buf, buf.Apply(func(n int) int { return n }))
+		require.Same(t, buf, buf.Reset())
+		require.Same(t, buf, buf.Clear())
+	})
 }
 
 // TestPopBack_ThenWrite_Wrapped pins that Write after PopBack on a wrapped
@@ -2232,4 +2253,138 @@ func TestPopBack_ThenWrite_Wrapped(t *testing.T) {
 	require.Equal(t, []int{4, 5, 6}, buf.Tail())
 	require.Equal(t, 3, buf.Offset(), "Offset must advance once on eviction")
 	require.Equal(t, 6, buf.Written())
+}
+
+// TestPopFront_PopFrontN_Equivalence_Wrapped is the wrapped-state mirror of
+// TestPopFront_PopFrontN_Equivalence. The non-wrapped equivalence test
+// alone leaves the modular-index arithmetic in PopFrontN's partial path
+// underexercised: in that test oldestIdx=0 so (oldestIdx + base + i) %
+// winLen reduces trivially. Running the same equivalence in a wrapped
+// state forces the modular reduction to do real work, which is where a
+// regression in PopFrontN's index math would actually manifest.
+func TestPopFront_PopFrontN_Equivalence_Wrapped(t *testing.T) {
+	// cap=5 + 8 writes ⇒ oldestIdx=3, live items wrap the physical end.
+	// Tail at this point is [4,5,6,7,8]; the partial PopFrontN(3) below
+	// must remove 6,7,8 in oldest-to-newest order.
+	all := []int{1, 2, 3, 4, 5, 6, 7, 8}
+	buf1 := tailbuf.New[int](5).WriteAll(all...)
+	buf2 := tailbuf.New[int](5).WriteAll(all...)
+	require.Equal(t, []int{4, 5, 6, 7, 8}, buf1.Tail())
+
+	popped1 := buf1.PopFrontN(3)
+	var popped2 []int
+	for i := 0; i < 3; i++ {
+		popped2 = append([]int{buf2.PopFront()}, popped2...)
+	}
+
+	require.Equal(t, []int{6, 7, 8}, popped1,
+		"PopFrontN must return removed items oldest-to-newest")
+	require.Equal(t, popped1, popped2,
+		"PopFrontN(n) and n×PopFront must yield the same result")
+	tailbuf.RequireEqualInternalState(t, buf1, buf2)
+	tailbuf.CheckInvariants(t, buf1)
+}
+
+// TestSliceNominal_Wrapped_StartAtOffset pins the modular-index path in
+// SliceNominal at the exact eviction boundary on a wrapped buffer. The
+// existing TestSliceTail_AfterClearAndRefill hits start==Offset but in an
+// unwrapped state (Clear+refill); the existing TestSliceTail_WrappedBufferClipEnd
+// hits the wrap case but not start==Offset. This test covers their
+// intersection, where a bug in either modular-index conversion (in
+// SliceNominal's pre-subtraction clip) or wrap traversal (in SliceTail's
+// loop) would surface.
+func TestSliceNominal_Wrapped_StartAtOffset(t *testing.T) {
+	// cap=5, write 7 items: window=[6,7,3,4,5], oldestIdx=2, len=5,
+	// offset=2. Live tail is [3,4,5,6,7].
+	buf := tailbuf.New[int](5).WriteAll(1, 2, 3, 4, 5, 6, 7)
+	require.Equal(t, []int{3, 4, 5, 6, 7}, buf.Tail())
+	start, end := buf.Bounds()
+	require.Equal(t, 2, start)
+	require.Equal(t, 7, end)
+
+	// start == Offset, full range: must return the whole live tail.
+	require.Equal(t, []int{3, 4, 5, 6, 7}, tailbuf.SliceNominal(buf, 2, 7))
+
+	// start == Offset, partial range that crosses the physical wrap
+	// boundary (item at physical index 0 is "6", at index 1 is "7").
+	require.Equal(t, []int{3, 4, 5, 6}, tailbuf.SliceNominal(buf, 2, 6))
+
+	// start == Offset, range entirely before the wrap.
+	require.Equal(t, []int{3, 4, 5}, tailbuf.SliceNominal(buf, 2, 5))
+
+	// start == Offset, single item.
+	require.Equal(t, []int{3}, tailbuf.SliceNominal(buf, 2, 3))
+
+	// start == Offset, empty range.
+	require.Empty(t, tailbuf.SliceNominal(buf, 2, 2))
+}
+
+// TestApply_PanicPreservesInvariantsAndPartialMutation pins the doc
+// claim that a panic in fn leaves positions [0, i) replaced with what fn
+// returned, positions [i, Len) untouched, and the buffer's structural
+// invariants intact. A future refactor that, say, half-updated oldestIdx
+// or len before reaching the panicking iteration would otherwise corrupt
+// the buffer silently.
+func TestApply_PanicPreservesInvariantsAndPartialMutation(t *testing.T) {
+	// cap=4 + 6 writes ⇒ wrapped state (window=[5,6,3,4], oldestIdx=2,
+	// len=4). Mutation must work correctly across the physical wrap, so
+	// pinning the panic contract in a wrapped state catches regressions
+	// the unwrapped case would miss.
+	buf := tailbuf.New[int](4).WriteAll(1, 2, 3, 4, 5, 6)
+	require.Equal(t, []int{3, 4, 5, 6}, buf.Tail())
+
+	panicVal := "boom at index 2"
+	calls := 0
+	func() {
+		defer func() {
+			r := recover()
+			require.Equal(t, panicVal, r,
+				"panic value must propagate through Apply unchanged")
+		}()
+		buf.Apply(func(n int) int {
+			if calls == 2 {
+				panic(panicVal)
+			}
+			calls++
+			return n * 100
+		})
+		t.Fatal("Apply must not return when fn panics")
+	}()
+
+	require.Equal(t, 2, calls,
+		"fn must have been invoked twice (indices 0 and 1) before the panic")
+	// Positions [0,2) replaced (3→300, 4→400); [2,Len) untouched (5, 6).
+	require.Equal(t, []int{300, 400, 5, 6}, buf.Tail())
+	tailbuf.CheckInvariants(t, buf)
+}
+
+// TestDo_PanicPreservesInvariantsAndPartialMutation is the [Buf.Do]
+// analogue of TestApply_PanicPreservesInvariantsAndPartialMutation.
+func TestDo_PanicPreservesInvariantsAndPartialMutation(t *testing.T) {
+	buf := tailbuf.New[int](4).WriteAll(1, 2, 3, 4, 5, 6)
+	require.Equal(t, []int{3, 4, 5, 6}, buf.Tail())
+
+	panicVal := "boom at index 2"
+	calls := 0
+	func() {
+		defer func() {
+			r := recover()
+			require.Equal(t, panicVal, r,
+				"panic value must propagate through Do unchanged")
+		}()
+		_ = buf.Do(context.Background(),
+			func(_ context.Context, n, index, _ int) (int, error) {
+				if index == 2 {
+					panic(panicVal)
+				}
+				calls++
+				return n * 100, nil
+			})
+		t.Fatal("Do must not return when fn panics")
+	}()
+
+	require.Equal(t, 2, calls,
+		"fn must have been invoked twice (indices 0 and 1) before the panic")
+	require.Equal(t, []int{300, 400, 5, 6}, buf.Tail())
+	tailbuf.CheckInvariants(t, buf)
 }

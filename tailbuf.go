@@ -24,8 +24,8 @@
 // reports whether a given nominal index is one of the live items.
 //
 // [Buf.Written] tracks the total count of writes ever made; it is independent
-// of [Buf.Offset] and is not changed by pops. The relationship between the
-// counters is:
+// of [Buf.Offset] and is not changed by any of the Pop or Drop variants. The
+// relationship between the counters is:
 //
 //	Bounds()       == (Offset(), Offset()+Len())
 //	Cap()          == fixed at construction
@@ -141,6 +141,14 @@ import "context"
 // writes (silently dropping the items) and returns the zero value of T from
 // every read. Use [New] to specify a non-zero capacity.
 //
+// # Comparability
+//
+// Buf embeds a slice and is therefore not comparable with ==; writing
+// `b1 == b2` is a compile error regardless of T. For structural equality
+// in tests, compare [Buf.Tail] together with [Buf.Cap], [Buf.Len],
+// [Buf.Written], and [Buf.Offset]; that quintuple uniquely identifies a
+// Buf's externally observable state.
+//
 // # Concurrency
 //
 // Buf is not safe for concurrent use; see the package documentation for
@@ -186,7 +194,8 @@ import "context"
 //     eviction-on-write (including the implicit eviction on every
 //     [Buf.Write] / [Buf.WriteAll] against a zero-capacity buffer), on
 //     [Buf.PopBack] / [Buf.PopBackN] / [Buf.DropBack] / [Buf.DropBackN], and
-//     on [Buf.Clear]. [Buf.PopFront] / [Buf.PopFrontN] do NOT change offset.
+//     on [Buf.Clear]. [Buf.PopFront] / [Buf.PopFrontN] / [Buf.DropFront] /
+//     [Buf.DropFrontN] do NOT change offset.
 //   - written never decreases except across [Buf.Reset]; it is bumped only
 //     by [Buf.Write] and [Buf.WriteAll] (including writes silently dropped
 //     by a zero-capacity Buf).
@@ -229,7 +238,8 @@ type Buf[T any] struct {
 	// count of items removed from the back of the tail by any of:
 	// eviction-on-write, a Write/WriteAll against a zero-capacity buffer (a
 	// conceptual eviction-on-write), PopBack, DropBack, PopBackN, DropBackN,
-	// or Clear. PopFront does NOT change offset.
+	// or Clear. PopFront, PopFrontN, DropFront, and DropFrontN do NOT change
+	// offset.
 	//
 	// offset is tracked explicitly rather than derived from written-cap; a
 	// lazily-derived value would be wrong whenever a pop or clear has
@@ -365,7 +375,8 @@ func (b *Buf[T]) Len() int {
 // [Buf.WriteAll]. It includes items that were evicted, popped, dropped, or
 // silently discarded by a zero-capacity buffer.
 //
-// Written is independent of [Buf.Offset] and [Buf.Len]: after [Buf.PopFront],
+// Written is independent of [Buf.Offset] and [Buf.Len]: after any front-end
+// remove ([Buf.PopFront], [Buf.PopFrontN], [Buf.DropFront], [Buf.DropFrontN]),
 // Written is unchanged but the upper end of [Buf.Bounds] shrinks. To recover
 // the count of items currently retained, use [Buf.Len]. To recover the count
 // of items removed from the back of the tail, use [Buf.Offset].
@@ -386,7 +397,8 @@ func (b *Buf[T]) Written() int {
 // [Buf.DropBack] / [Buf.PopBackN] / [Buf.DropBackN], or [Buf.Clear].
 //
 // Equivalently, Offset is the number of items that have left the back of
-// the tail by any of those routes. [Buf.PopFront] does NOT advance Offset.
+// the tail by any of those routes. [Buf.PopFront], [Buf.PopFrontN],
+// [Buf.DropFront], and [Buf.DropFrontN] do NOT advance Offset.
 func (b *Buf[T]) Offset() int {
 	return b.offset
 }
@@ -403,9 +415,10 @@ func (b *Buf[T]) Offset() int {
 //	    // ... use item with its nominal index ...
 //	}
 //
-// Bounds derives end from offset + len, NOT from written. After a
-// [Buf.PopFront] (which shrinks len without changing written), or after a
-// [Buf.Clear] (len resets to 0 but written is preserved), using written
+// Bounds derives end from offset + len, NOT from written. After any
+// front-end remove ([Buf.PopFront], [Buf.PopFrontN], [Buf.DropFront],
+// [Buf.DropFrontN]) — which shrinks len without changing written — or after
+// a [Buf.Clear] (len resets to 0 but written is preserved), using written
 // here would over-report the live range.
 func (b *Buf[T]) Bounds() (start, end int) {
 	return b.offset, b.offset + b.len
@@ -825,6 +838,8 @@ func (b *Buf[T]) DropBack() {
 // DropBackN is identical to [Buf.PopBackN] except that it does not allocate
 // or return the removed items; prefer it when the caller doesn't need the
 // values back.
+//
+// See also: [Buf.PopBackN], [Buf.DropBack].
 func (b *Buf[T]) DropBackN(n int) {
 	if b.len == 0 || n < 1 {
 		return
@@ -855,13 +870,21 @@ func (b *Buf[T]) DropBackN(n int) {
 // wrap, a direct loop over [Buf.Tail] is roughly twice as fast (the
 // compiler inlines the loop body and avoids the per-iteration modular
 // indexing that Apply must perform; see the package benchmarks for
-// current absolute numbers). Apply is the natural choice when you want
-// correctness under wrap without having to think about it, and when you
-// don't need an index, an early exit, or an error result — for those,
-// use [Buf.Do].
+// current absolute numbers). The "Tail loop" comparison is apples-to-apples
+// only for read transforms or for in-place writes against an unwrapped
+// buffer; when the live items wrap, the slice returned by [Buf.Tail] is a
+// fresh allocation, so writes through it never reach the buffer. Apply is
+// the natural choice when you want correctness under wrap without having
+// to think about it, and when you don't need an index, an early exit, or
+// an error result — for those, use [Buf.Do].
 //
 // Behavior is undefined if fn modifies b (whether by writing, popping, or
 // otherwise).
+//
+// If fn panics on iteration i, positions [0, i) already hold the values fn
+// returned and positions [i, Len) are untouched; the buffer's structural
+// invariants are preserved, so the caller can [recover] and continue to
+// use the buffer.
 //
 // # Example
 //
@@ -872,9 +895,8 @@ func (b *Buf[T]) DropBackN(n int) {
 // The implementation uses uniform modular indexing — exactly len iterations,
 // no special-case fork on whether the live items wrap. A simpler-looking
 // "no-wrap branch + wrapped branch" structure has to disambiguate cases
-// like len == 1 (where the oldest and newest cursors coincide) and post-pop wraps
-// (which the wrapped branch can miscount), and getting that right is
-// fragile.
+// where the oldest and newest cursors coincide (len == 1, len == cap with
+// oldestIdx > 0) and getting that right is fragile.
 func (b *Buf[T]) Apply(fn func(item T) T) *Buf[T] {
 	winLen := len(b.window)
 	for i := 0; i < b.len; i++ {
@@ -911,6 +933,11 @@ func (b *Buf[T]) Apply(fn func(item T) T) *Buf[T] {
 //
 // Behavior is undefined if fn modifies b (whether by writing, popping, or
 // otherwise).
+//
+// If fn returns an error at iteration i (or panics there), positions [0, i)
+// already hold the values fn returned and positions [i, Len) are untouched;
+// the buffer's structural invariants are preserved, so a caller that
+// [recover]s from a panic can continue to use the buffer.
 //
 // # Example
 //

@@ -85,8 +85,9 @@ func BenchmarkTail_NoWrap(b *testing.B) {
 func BenchmarkTail_Wrapped(b *testing.B) {
 	buf := tailbuf.New[int](1024)
 	// Drive the ring so it's physically wrapped: cap + cap/2 writes put
-	// back at cap/2, with the live items spanning the physical end of
-	// window. Writing exactly 2*cap would land back at 0 again (no wrap).
+	// oldestIdx at cap/2, with the live items spanning the physical end of
+	// window. Writing exactly 2*cap would land oldestIdx back at 0 again
+	// (no wrap).
 	for i := 0; i < 1024+512; i++ {
 		buf.Write(i)
 	}

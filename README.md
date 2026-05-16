@@ -113,6 +113,7 @@ There are also basic methods for interacting with the buffer:
   buf.Clear()                              // Clear is like Reset, but doesn't reset "written" count
   fmt.Println(buf.Len())                   // 0
   fmt.Println("Written:", buf.Written())   // 2
+  fmt.Println("Offset:", buf.Offset())     // 2  (Clear conceptually evicts off the back, so Offset advances by the prior Len)
 ```
 
 
