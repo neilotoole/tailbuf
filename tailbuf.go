@@ -569,9 +569,10 @@ func (b *Buf[T]) tailNewSlice() []T {
 
 // zeroTail zeroes the storage slots holding live items, so that callers
 // don't keep stale references to garbage-collectable values past their
-// useful life. Called by [Buf.Reset], [Buf.Clear], [Buf.PopFrontN], and
-// [Buf.PopBackN] when those helpers are emptying (rather than partially
-// shrinking) the tail.
+// useful life. Called directly by [Buf.Reset], [Buf.Clear], [Buf.PopFrontN],
+// and [Buf.DropFrontN] when those helpers are emptying (rather than
+// partially shrinking) the tail; [Buf.PopBackN] and [Buf.DropBackN] reach
+// it indirectly through [Buf.Clear].
 func (b *Buf[T]) zeroTail() {
 	if b.len == 0 {
 		return
@@ -881,6 +882,8 @@ func (b *Buf[T]) DropBackN(n int) {
 // Behavior is undefined if fn modifies b (whether by writing, popping, or
 // otherwise).
 //
+// Panics if fn is nil, regardless of [Buf.Len].
+//
 // If fn panics on iteration i, positions [0, i) already hold the values fn
 // returned and positions [i, Len) are untouched; the buffer's structural
 // invariants are preserved, so the caller can [recover] and continue to
@@ -898,6 +901,9 @@ func (b *Buf[T]) DropBackN(n int) {
 // where the oldest and newest cursors coincide (len == 1, len == cap with
 // oldestIdx > 0) and getting that right is fragile.
 func (b *Buf[T]) Apply(fn func(item T) T) *Buf[T] {
+	if fn == nil {
+		panic("tailbuf: Apply fn must not be nil")
+	}
 	winLen := len(b.window)
 	for i := 0; i < b.len; i++ {
 		idx := (b.oldestIdx + i) % winLen
@@ -934,6 +940,8 @@ func (b *Buf[T]) Apply(fn func(item T) T) *Buf[T] {
 // Behavior is undefined if fn modifies b (whether by writing, popping, or
 // otherwise).
 //
+// Panics if fn is nil, regardless of [Buf.Len].
+//
 // If fn returns an error at iteration i (or panics there), positions [0, i)
 // already hold the values fn returned and positions [i, Len) are untouched;
 // the buffer's structural invariants are preserved, so a caller that
@@ -948,6 +956,9 @@ func (b *Buf[T]) Apply(fn func(item T) T) *Buf[T] {
 //	    return fmt.Sprintf("%d: %s", index+tailOffset, item), nil
 //	})
 func (b *Buf[T]) Do(ctx context.Context, fn func(ctx context.Context, item T, index, tailOffset int) (T, error)) error {
+	if fn == nil {
+		panic("tailbuf: Do fn must not be nil")
+	}
 	if b.len == 0 {
 		return nil
 	}

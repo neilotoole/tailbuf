@@ -2388,3 +2388,64 @@ func TestDo_PanicPreservesInvariantsAndPartialMutation(t *testing.T) {
 	require.Equal(t, []int{300, 400, 5, 6}, buf.Tail())
 	tailbuf.CheckInvariants(t, buf)
 }
+
+// TestApplyDo_NilFnPanicsUniformlyAcrossStates pins the contract that
+// passing a nil fn panics regardless of [Buf.Len]. Without the explicit
+// nil-fn guard, Apply on an empty buffer would silently no-op while
+// Apply on a non-empty buffer would crash with a nil-pointer dereference
+// on the first call. Do had the same shape (and additionally guarded
+// nil ctx but not nil fn). The diagnostic must be uniform across states
+// so callers see the same failure mode whether or not the buffer is
+// empty at the moment of misuse.
+func TestApplyDo_NilFnPanicsUniformlyAcrossStates(t *testing.T) {
+	t.Run("Apply_empty", func(t *testing.T) {
+		require.PanicsWithValue(t, "tailbuf: Apply fn must not be nil", func() {
+			tailbuf.New[int](4).Apply(nil)
+		})
+	})
+	t.Run("Apply_nonempty", func(t *testing.T) {
+		buf := tailbuf.New[int](4).WriteAll(1, 2, 3)
+		require.PanicsWithValue(t, "tailbuf: Apply fn must not be nil", func() {
+			buf.Apply(nil)
+		})
+		// Invariants survive a refused call; buffer is still usable.
+		require.Equal(t, []int{1, 2, 3}, buf.Tail())
+		tailbuf.CheckInvariants(t, buf)
+	})
+	t.Run("Apply_zeroValue", func(t *testing.T) {
+		var buf tailbuf.Buf[int]
+		require.PanicsWithValue(t, "tailbuf: Apply fn must not be nil", func() {
+			buf.Apply(nil)
+		})
+	})
+	t.Run("Do_empty", func(t *testing.T) {
+		require.PanicsWithValue(t, "tailbuf: Do fn must not be nil", func() {
+			_ = tailbuf.New[int](4).Do(context.Background(), nil)
+		})
+	})
+	t.Run("Do_nonempty", func(t *testing.T) {
+		buf := tailbuf.New[int](4).WriteAll(1, 2, 3)
+		require.PanicsWithValue(t, "tailbuf: Do fn must not be nil", func() {
+			_ = buf.Do(context.Background(), nil)
+		})
+		require.Equal(t, []int{1, 2, 3}, buf.Tail())
+		tailbuf.CheckInvariants(t, buf)
+	})
+	t.Run("Do_zeroValue", func(t *testing.T) {
+		var buf tailbuf.Buf[int]
+		require.PanicsWithValue(t, "tailbuf: Do fn must not be nil", func() {
+			_ = buf.Do(context.Background(), nil)
+		})
+	})
+	// The fn check must precede the ctx-nil normalization in Do, so a
+	// caller passing both nil sees the fn error (the more diagnostic of
+	// the two).
+	t.Run("Do_nilCtxAndNilFn_reportsFn", func(t *testing.T) {
+		// Assign through a typed var so staticcheck SA1012 doesn't fire on
+		// the intentional nil-ctx misuse.
+		var nilCtx context.Context
+		require.PanicsWithValue(t, "tailbuf: Do fn must not be nil", func() {
+			_ = tailbuf.New[int](4).WriteAll(1, 2, 3).Do(nilCtx, nil)
+		})
+	})
+}
