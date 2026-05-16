@@ -533,12 +533,14 @@ func (b *Buf[T]) Peek(tailIndex int) T {
 // storage.
 func (b *Buf[T]) Tail() []T {
 	if b.len == 0 {
-		// Return a non-nil empty slice rather than b.window[:0]: the
-		// latter would propagate nilness from the underlying window (nil
-		// for the zero-value Buf, non-nil for New(0)), and that would
-		// make the nil-vs-empty distinction observable through the
-		// public API — contradicting the contract on the window field.
-		// An allocation-free literal matches what tailNewSlice,
+		// Return a non-nil empty slice rather than b.window[:0:0] (the
+		// previous form, introduced when the no-wrap branch grew a
+		// 3-index cap): either b.window[:0] or b.window[:0:0] would
+		// propagate nilness from the underlying window (nil for the
+		// zero-value Buf, non-nil for New(0)), and that would make
+		// the nil-vs-empty distinction observable through the public
+		// API — contradicting the contract on the window field. An
+		// allocation-free literal matches what tailNewSlice,
 		// SliceTail, and SliceNominal return for the empty case.
 		return []T{}
 	}
