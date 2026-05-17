@@ -70,6 +70,13 @@ section of the godoc for how this differs from `Buf.Peek` (which panics on
 out-of-range) and for the deliberate asymmetry around negative start
 values between `SliceTail` and `SliceNominal`.
 
+> [!NOTE]
+> **`Front` is the newest end; `Back` is the oldest end.** This is the
+> reverse of the queue/deque convention many readers will assume:
+> `PopFront` removes the most recently written item, while `PopBack`
+> removes the oldest. The example below relies on this — `PopBackN(2)`
+> on `[a b c]` returns `[a b]`, the two oldest.
+
 There are various functions for popping, dropping, or peeking into the tail
 buffer. `PopFront`/`PopFrontN` and `PopBack`/`PopBackN` remove and return
 items from the newest and oldest ends respectively; the corresponding
@@ -84,7 +91,7 @@ singular variants and a slice allocation in the N variants).
   fmt.Println(buf.Peek(0))      // a
   fmt.Println(buf.Peek(1))      // b
 
-  fmt.Println(buf.PopBackN(2))  // [a b]
+  fmt.Println(buf.PopBackN(2))  // [a b]  (the two oldest)
   fmt.Println(buf.Tail())       // [c]
 ```
 
@@ -144,6 +151,24 @@ error awareness.
   buf.WriteAll("In", "Xanadu  ", "   did", "Kubla  ", "Khan")
   buf.Apply(strings.ToUpper).Apply(strings.TrimSpace)
   fmt.Println(buf.Tail()) // [DID KUBLA KHAN]
+```
+
+`Do` iterates oldest-to-newest; if the callback returns an error, iteration
+halts there and items at and after that position are left untouched. The
+callback also receives the item's tail-relative `index` and the buffer's
+`tailOffset` (their sum is the item's nominal index).
+
+```go
+  buf := tailbuf.New[int](3).WriteAll(1, 2, 3)
+
+  err := buf.Do(ctx, func(ctx context.Context, n, index, tailOffset int) (int, error) {
+      if n > 2 {
+          return n, fmt.Errorf("value too large: %d", n)
+      }
+      return n * 10, nil
+  })
+  fmt.Println(err)         // value too large: 3
+  fmt.Println(buf.Tail())  // [10 20 3]
 ```
 
 The zero value of `tailbuf.Buf[T]` is a usable empty zero-capacity buffer —
