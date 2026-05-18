@@ -110,8 +110,8 @@
 //
 // Read access:
 //
-//	Tail                  — alias-or-allocate (see "Slice aliasing" above)
-//	Newest, Oldest, Peek     — single-item reads (Peek panics on out-of-range)
+//	Tail                    — alias-or-allocate (see "Slice aliasing" above)
+//	Newest, Oldest, Peek    — single-item reads (Peek panics on out-of-range)
 //	SliceTail, SliceNominal — always allocate; clip silently on out-of-range
 //
 // Mutation (append):
@@ -125,9 +125,9 @@
 // Mutation (selective remove):
 //
 //	PopNewest,  PopNewestN  — remove from the newest end (no Offset change)
-//	PopOldest,   PopOldestN   — remove from the oldest end (Offset advances)
+//	PopOldest,  PopOldestN  — remove from the oldest end (Offset advances)
 //	DropNewest, DropNewestN — like PopNewest/PopNewestN but discard the result
-//	DropOldest,  DropOldestN  — like PopOldest/PopOldestN but discard the result
+//	DropOldest, DropOldestN — like PopOldest/PopOldestN but discard the result
 //
 // Mutation (bulk empty):
 //
@@ -518,10 +518,10 @@ func (b *Buf[T]) Peek(tailIndex int) T {
 // WriteAll, any Pop* or Drop* variant, Clear, Reset, Apply, or Do.
 //
 // Tail applies a full-slice expression to cap the returned slice's capacity
-// at its length. This means [append]-ing to the returned slice allocates a
+// at its length. This means appending to the returned slice allocates a
 // fresh backing array rather than silently writing into the ring past the
 // live region, so callers cannot accidentally corrupt internal state.
-// (Pre-cap behavior: append would overwrite window slots that Buf still
+// (Without the cap, append would overwrite window slots that Buf still
 // considered free, breaking len / oldestIdx / offset coherence.)
 //
 // When the live items wrap, Tail allocates a fresh slice; the returned
@@ -899,7 +899,7 @@ func (b *Buf[T]) DropOldestN(n int) {
 //
 // If fn panics on iteration i, positions [0, i) already hold the values fn
 // returned and positions [i, Len) are untouched; the buffer's structural
-// invariants are preserved, so the caller can [recover] and continue to
+// invariants are preserved, so the caller can recover and continue to
 // use the buffer.
 //
 // # Example
@@ -958,7 +958,7 @@ func (b *Buf[T]) Apply(fn func(item T) T) *Buf[T] {
 // If fn returns an error at iteration i (or panics there), positions [0, i)
 // already hold the values fn returned and positions [i, Len) are untouched;
 // the buffer's structural invariants are preserved, so a caller that
-// [recover]s from a panic can continue to use the buffer.
+// recovers from a panic can continue to use the buffer.
 //
 // # Example
 //
