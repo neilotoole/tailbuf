@@ -37,7 +37,7 @@ func ExampleBuf_Peek() {
 	fmt.Println(buf.Peek(0))
 	fmt.Println(buf.Peek(1))
 
-	fmt.Println(buf.PopBackN(2))
+	fmt.Println(buf.PopOldestN(2))
 	fmt.Println(buf.Tail())
 	// Output:
 	// a
@@ -106,48 +106,48 @@ func ExampleBuf_Bounds() {
 	start, end = buf.Bounds()
 	fmt.Printf("after 2 evictions: bounds=(%d,%d) tail=%v\n", start, end, buf.Tail())
 
-	buf.PopBack() // removes oldest ("c"); offset advances
+	buf.PopOldest() // removes oldest ("c"); offset advances
 	start, end = buf.Bounds()
-	fmt.Printf("after PopBack:     bounds=(%d,%d) tail=%v\n", start, end, buf.Tail())
+	fmt.Printf("after PopOldest:     bounds=(%d,%d) tail=%v\n", start, end, buf.Tail())
 
-	buf.PopFront() // removes newest ("e"); end shrinks
+	buf.PopNewest() // removes newest ("e"); end shrinks
 	start, end = buf.Bounds()
-	fmt.Printf("after PopFront:    bounds=(%d,%d) tail=%v\n", start, end, buf.Tail())
+	fmt.Printf("after PopNewest:    bounds=(%d,%d) tail=%v\n", start, end, buf.Tail())
 
 	// Output:
 	// after 3 writes:    bounds=(0,3) tail=[a b c]
 	// after 2 evictions: bounds=(2,5) tail=[c d e]
-	// after PopBack:     bounds=(3,5) tail=[d e]
-	// after PopFront:    bounds=(3,4) tail=[d]
+	// after PopOldest:     bounds=(3,5) tail=[d e]
+	// after PopNewest:    bounds=(3,4) tail=[d]
 }
 
-// ExampleBuf_Front shows the relationship between Front, Back, and Tail.
-func ExampleBuf_Front() {
+// ExampleBuf_Newest shows the relationship between Newest, Oldest, and Tail.
+func ExampleBuf_Newest() {
 	buf := tailbuf.New[int](3)
 	buf.WriteAll(10, 20, 30)
-	fmt.Println("front:", buf.Front()) // newest
-	fmt.Println("back: ", buf.Back())  // oldest
+	fmt.Println("newest:", buf.Newest()) // newest
+	fmt.Println("oldest:", buf.Oldest()) // oldest
 
-	// Front/Back on an empty buffer return the zero value of T rather than
+	// Newest/Oldest on an empty buffer return the zero value of T rather than
 	// panicking.
 	empty := tailbuf.New[int](3)
-	fmt.Println("empty front:", empty.Front())
-	fmt.Println("empty back: ", empty.Back())
+	fmt.Println("empty newest:", empty.Newest())
+	fmt.Println("empty oldest:", empty.Oldest())
 
 	// Output:
-	// front: 30
-	// back:  10
-	// empty front: 0
-	// empty back:  0
+	// newest: 30
+	// oldest: 10
+	// empty newest: 0
+	// empty oldest: 0
 }
 
-// ExampleBuf_PopFront shows that PopFront returns the newest live item and
+// ExampleBuf_PopNewest shows that PopNewest returns the newest live item and
 // shrinks the tail from its newest end without changing Offset.
-func ExampleBuf_PopFront() {
+func ExampleBuf_PopNewest() {
 	buf := tailbuf.New[string](3)
 	buf.WriteAll("a", "b", "c")
 
-	fmt.Println("popped:", buf.PopFront()) // returns "c"
+	fmt.Println("popped:", buf.PopNewest()) // returns "c"
 	fmt.Println("tail:  ", buf.Tail())
 	fmt.Println("offset:", buf.Offset()) // unchanged
 	fmt.Println("len:   ", buf.Len())
@@ -159,13 +159,13 @@ func ExampleBuf_PopFront() {
 	// len:    2
 }
 
-// ExampleBuf_PopBack shows that PopBack returns the oldest live item and
+// ExampleBuf_PopOldest shows that PopOldest returns the oldest live item and
 // advances Offset by one.
-func ExampleBuf_PopBack() {
+func ExampleBuf_PopOldest() {
 	buf := tailbuf.New[string](3)
 	buf.WriteAll("a", "b", "c")
 
-	fmt.Println("popped:", buf.PopBack()) // returns "a"
+	fmt.Println("popped:", buf.PopOldest()) // returns "a"
 	fmt.Println("tail:  ", buf.Tail())
 	fmt.Println("offset:", buf.Offset()) // advanced
 	fmt.Println("len:   ", buf.Len())
@@ -261,34 +261,34 @@ func ExampleNew_zeroCapacity() {
 	// tail:    []
 }
 
-// ExampleBuf_Back shows the relationship between Back and the oldest item
+// ExampleBuf_Oldest shows the relationship between Oldest and the oldest item
 // in the tail, including the empty-buffer case.
-func ExampleBuf_Back() {
+func ExampleBuf_Oldest() {
 	buf := tailbuf.New[int](3)
 	buf.WriteAll(10, 20, 30)
-	fmt.Println("back: ", buf.Back()) // oldest live item
+	fmt.Println("oldest:", buf.Oldest()) // oldest live item
 
-	// On an empty buffer Back returns the zero value of T rather than
+	// On an empty buffer Oldest returns the zero value of T rather than
 	// panicking.
 	empty := tailbuf.New[int](3)
-	fmt.Println("empty:", empty.Back())
+	fmt.Println("empty:", empty.Oldest())
 
 	// Output:
-	// back:  10
+	// oldest: 10
 	// empty: 0
 }
 
-// ExampleBuf_PopFrontN shows that PopFrontN removes the newest n items and
+// ExampleBuf_PopNewestN shows that PopNewestN removes the newest n items and
 // returns them in oldest-to-newest order — the LAST element of the
-// returned slice is the one that was at the front before the call.
-func ExampleBuf_PopFrontN() {
+// returned slice is the one that was at the newest end before the call.
+func ExampleBuf_PopNewestN() {
 	buf := tailbuf.New[string](5)
 	buf.WriteAll("a", "b", "c", "d", "e")
 
-	popped := buf.PopFrontN(2) // removes "d" and "e" (the two newest)
+	popped := buf.PopNewestN(2) // removes "d" and "e" (the two newest)
 	fmt.Println("popped:", popped)
 	fmt.Println("tail:  ", buf.Tail())
-	fmt.Println("offset:", buf.Offset()) // PopFrontN does NOT advance Offset
+	fmt.Println("offset:", buf.Offset()) // PopNewestN does NOT advance Offset
 
 	// Output:
 	// popped: [d e]
@@ -296,13 +296,13 @@ func ExampleBuf_PopFrontN() {
 	// offset: 0
 }
 
-// ExampleBuf_PopBackN shows that PopBackN removes the oldest n items in
+// ExampleBuf_PopOldestN shows that PopOldestN removes the oldest n items in
 // oldest-to-newest order and advances Offset by the number removed.
-func ExampleBuf_PopBackN() {
+func ExampleBuf_PopOldestN() {
 	buf := tailbuf.New[string](5)
 	buf.WriteAll("a", "b", "c", "d", "e")
 
-	popped := buf.PopBackN(2) // removes "a" and "b" (the two oldest)
+	popped := buf.PopOldestN(2) // removes "a" and "b" (the two oldest)
 	fmt.Println("popped:", popped)
 	fmt.Println("tail:  ", buf.Tail())
 	fmt.Println("offset:", buf.Offset()) // advanced by 2
@@ -409,7 +409,7 @@ func TestBuf(t *testing.T) {
 		t.Run(fmt.Sprintf("%d_%s", i, string(tc.add)), func(t *testing.T) {
 			buf.Write(tc.add)
 			require.Equal(t, tc.wantEnd, buf.Written())
-			require.Equal(t, tc.add, buf.Front())
+			require.Equal(t, tc.add, buf.Newest())
 			window := buf.Tail()
 			require.Equal(t, tc.wantWindow, window)
 			start, end := buf.Bounds()
@@ -583,126 +583,126 @@ func TestZeroCapacity(t *testing.T) {
 	require.Empty(t, tailbuf.SliceNominal(buf, 0, 1))
 }
 
-func TestPopFront(t *testing.T) {
+func TestPopNewest(t *testing.T) {
 	buf := tailbuf.New[rune](3)
 	buf.WriteAll('a', 'b', 'c')
 	require.Equal(t, 3, buf.Written())
 	require.Equal(t, 3, buf.Len())
-	require.Equal(t, 'c', buf.Front())
-	require.Equal(t, 'a', buf.Back())
+	require.Equal(t, 'c', buf.Newest())
+	require.Equal(t, 'a', buf.Oldest())
 	require.Equal(t, []rune{'a', 'b', 'c'}, buf.Tail())
 
-	got := buf.PopFront()
+	got := buf.PopNewest()
 	require.Equal(t, 'c', got)
 	require.Equal(t, 3, buf.Written())
 	require.Equal(t, 2, buf.Len())
-	require.Equal(t, 'b', buf.Front())
+	require.Equal(t, 'b', buf.Newest())
 	require.Equal(t, []rune{'a', 'b', 0}, tailbuf.InternalWindow(buf))
 	require.Equal(t, []rune{'a', 'b'}, buf.Tail())
 
-	got = buf.PopFront()
+	got = buf.PopNewest()
 	require.Equal(t, 'b', got)
 	require.Equal(t, 3, buf.Written())
 	require.Equal(t, 1, buf.Len())
-	require.Equal(t, 'a', buf.Front())
+	require.Equal(t, 'a', buf.Newest())
 	require.Equal(t, []rune{'a', 0, 0}, tailbuf.InternalWindow(buf))
 	require.Equal(t, []rune{'a'}, buf.Tail())
 
-	got = buf.PopFront()
+	got = buf.PopNewest()
 	require.Equal(t, 'a', got)
 	require.Equal(t, 3, buf.Written())
-	require.Empty(t, buf.Front())
+	require.Empty(t, buf.Newest())
 	requireZeroInternalWindow(t, buf)
 	require.Equal(t, 0, buf.Len())
 	require.Equal(t, []rune{}, buf.Tail())
 
-	got = buf.PopFront()
+	got = buf.PopNewest()
 	require.Zero(t, got)
 	require.Equal(t, 3, buf.Written())
 	require.Equal(t, 0, buf.Len())
-	require.Empty(t, buf.Front())
+	require.Empty(t, buf.Newest())
 	requireZeroInternalWindow(t, buf)
 	require.Equal(t, []rune{}, buf.Tail())
 }
 
-func TestPopBack(t *testing.T) {
+func TestPopOldest(t *testing.T) {
 	buf := tailbuf.New[rune](3)
 	buf.WriteAll('a', 'b', 'c')
 	require.Equal(t, 3, buf.Written())
 	require.Equal(t, 3, buf.Len())
-	require.Equal(t, 'c', buf.Front())
-	require.Equal(t, 'a', buf.Back())
+	require.Equal(t, 'c', buf.Newest())
+	require.Equal(t, 'a', buf.Oldest())
 	require.Equal(t, []rune{'a', 'b', 'c'}, tailbuf.InternalWindow(buf))
 	require.Equal(t, []rune{'a', 'b', 'c'}, buf.Tail())
 
-	got := buf.PopBack()
+	got := buf.PopOldest()
 	require.Equal(t, 'a', got)
 	require.Equal(t, 3, buf.Written())
 	require.Equal(t, 2, buf.Len())
-	require.Equal(t, 'b', buf.Back())
+	require.Equal(t, 'b', buf.Oldest())
 	require.Equal(t, []rune{0, 'b', 'c'}, tailbuf.InternalWindow(buf))
 	require.Equal(t, []rune{'b', 'c'}, buf.Tail())
 
-	got = buf.PopBack()
+	got = buf.PopOldest()
 	require.Equal(t, 'b', got)
 	require.Equal(t, 3, buf.Written())
 	require.Equal(t, 1, buf.Len())
-	require.Equal(t, 'c', buf.Back())
+	require.Equal(t, 'c', buf.Oldest())
 	require.Equal(t, []rune{0, 0, 'c'}, tailbuf.InternalWindow(buf))
 
-	got = buf.PopBack()
+	got = buf.PopOldest()
 	require.Equal(t, 'c', got)
 	require.Equal(t, 3, buf.Written())
 	require.Equal(t, 0, buf.Len())
-	require.Empty(t, buf.Back())
+	require.Empty(t, buf.Oldest())
 	requireZeroInternalWindow(t, buf)
 
-	got = buf.PopBack()
+	got = buf.PopOldest()
 	require.Zero(t, got)
 	require.Equal(t, 3, buf.Written())
 	require.Equal(t, 0, buf.Len())
-	require.Empty(t, buf.Back())
+	require.Empty(t, buf.Oldest())
 	requireZeroInternalWindow(t, buf)
 }
 
-func TestDropBack(t *testing.T) {
+func TestDropOldest(t *testing.T) {
 	buf := tailbuf.New[rune](3)
 	buf.WriteAll('a', 'b', 'c')
 	require.Equal(t, 3, buf.Written())
 	require.Equal(t, 3, buf.Len())
-	require.Equal(t, 'a', buf.Back())
+	require.Equal(t, 'a', buf.Oldest())
 	require.Equal(t, []rune{'a', 'b', 'c'}, buf.Tail())
 
-	buf.DropBack()
+	buf.DropOldest()
 	require.Equal(t, 3, buf.Written())
 	require.Equal(t, 2, buf.Len())
-	require.Equal(t, 'b', buf.Back())
+	require.Equal(t, 'b', buf.Oldest())
 	require.Equal(t, []rune{0, 'b', 'c'}, tailbuf.InternalWindow(buf))
 	require.Equal(t, []rune{'b', 'c'}, buf.Tail())
 
-	buf.DropBack()
+	buf.DropOldest()
 	require.Equal(t, 3, buf.Written())
 	require.Equal(t, 1, buf.Len())
-	require.Equal(t, 'c', buf.Back())
+	require.Equal(t, 'c', buf.Oldest())
 	require.Equal(t, []rune{0, 0, 'c'}, tailbuf.InternalWindow(buf))
 	require.Equal(t, []rune{'c'}, buf.Tail())
 
-	buf.DropBack()
+	buf.DropOldest()
 	require.Equal(t, 3, buf.Written())
 	require.Equal(t, 0, buf.Len())
-	require.Empty(t, buf.Back())
+	require.Empty(t, buf.Oldest())
 	requireZeroInternalWindow(t, buf)
 	require.Empty(t, buf.Tail())
 
-	buf.DropBack()
+	buf.DropOldest()
 	require.Equal(t, 3, buf.Written())
 	require.Equal(t, 0, buf.Len())
-	require.Empty(t, buf.Back())
+	require.Empty(t, buf.Oldest())
 	requireZeroInternalWindow(t, buf)
 	require.Empty(t, buf.Tail())
 }
 
-func TestPopBackN(t *testing.T) {
+func TestPopOldestN(t *testing.T) {
 	all := []rune{'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'}
 	buf := tailbuf.New[rune](10)
 	buf.WriteAll(all...)
@@ -710,13 +710,13 @@ func TestPopBackN(t *testing.T) {
 	require.Equal(t, 10, buf.Written())
 	require.Equal(t, all, buf.Tail())
 
-	got := buf.PopBackN(0)
+	got := buf.PopOldestN(0)
 	require.Empty(t, got)
 	require.Equal(t, 10, buf.Len())
 	require.Equal(t, 10, buf.Written())
 	require.Equal(t, all, buf.Tail())
 
-	got = buf.PopBackN(1)
+	got = buf.PopOldestN(1)
 	require.Equal(t, []rune{'a'}, got)
 	require.Equal(t, 9, buf.Len())
 	require.Equal(t, 10, buf.Written())
@@ -725,21 +725,21 @@ func TestPopBackN(t *testing.T) {
 	gotTail := buf.Tail()
 	require.Equal(t, all[1:], gotTail)
 
-	got = buf.PopBackN(3)
+	got = buf.PopOldestN(3)
 	require.Equal(t, []rune{'b', 'c', 'd'}, got)
 	require.Equal(t, 6, buf.Len())
 	require.Equal(t, 10, buf.Written())
 	gotTail = buf.Tail()
 	require.Equal(t, all[4:], gotTail)
 
-	got = buf.PopBackN(10)
+	got = buf.PopOldestN(10)
 	require.Equal(t, []rune{'e', 'f', 'g', 'h', 'i', 'j'}, got)
 	require.Equal(t, 0, buf.Len())
 	require.Equal(t, 10, buf.Written())
 	require.Empty(t, buf.Tail())
 }
 
-func TestPopFrontN(t *testing.T) {
+func TestPopNewestN(t *testing.T) {
 	all := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
 	buf := tailbuf.New[string](10)
 	buf.WriteAll(all...)
@@ -747,13 +747,13 @@ func TestPopFrontN(t *testing.T) {
 	require.Equal(t, 10, buf.Written())
 	require.Equal(t, all, buf.Tail())
 
-	got := buf.PopFrontN(0)
+	got := buf.PopNewestN(0)
 	require.Empty(t, got)
 	require.Equal(t, 10, buf.Len())
 	require.Equal(t, 10, buf.Written())
 	require.Equal(t, all, buf.Tail())
 
-	got = buf.PopFrontN(1)
+	got = buf.PopNewestN(1)
 	require.Equal(t, []string{"j"}, got)
 	require.Equal(t, 9, buf.Len())
 	require.Equal(t, 10, buf.Written())
@@ -762,14 +762,14 @@ func TestPopFrontN(t *testing.T) {
 	gotTail := buf.Tail()
 	require.Equal(t, []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}, gotTail)
 
-	got = buf.PopFrontN(2)
+	got = buf.PopNewestN(2)
 	require.Equal(t, []string{"h", "i"}, got)
 	require.Equal(t, 7, buf.Len())
 	require.Equal(t, 10, buf.Written())
 	gotTail = buf.Tail()
 	require.Equal(t, []string{"a", "b", "c", "d", "e", "f", "g"}, gotTail)
 
-	got = buf.PopFrontN(10)
+	got = buf.PopNewestN(10)
 	require.Equal(t, []string{"a", "b", "c", "d", "e", "f", "g"}, got)
 	require.Equal(t, 0, buf.Len())
 	require.Equal(t, 10, buf.Written())
@@ -793,7 +793,7 @@ func TestLen(t *testing.T) {
 	require.Equal(t, 3, buf.Len())
 }
 
-func TestDropBackN(t *testing.T) {
+func TestDropOldestN(t *testing.T) {
 	all := []rune{'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'}
 	buf := tailbuf.New[rune](10)
 	buf.WriteAll(all...)
@@ -801,12 +801,12 @@ func TestDropBackN(t *testing.T) {
 	require.Equal(t, 10, buf.Written())
 	require.Equal(t, all, buf.Tail())
 
-	buf.DropBackN(0)
+	buf.DropOldestN(0)
 	require.Equal(t, 10, buf.Len())
 	require.Equal(t, 10, buf.Written())
 	require.Equal(t, all, buf.Tail())
 
-	buf.DropBackN(1)
+	buf.DropOldestN(1)
 	require.Equal(t, 9, buf.Len())
 	require.Equal(t, 10, buf.Written())
 	window := tailbuf.InternalWindow(buf)
@@ -814,19 +814,19 @@ func TestDropBackN(t *testing.T) {
 	gotTail := buf.Tail()
 	require.Equal(t, all[1:], gotTail)
 
-	buf.DropBackN(3)
+	buf.DropOldestN(3)
 	require.Equal(t, 6, buf.Len())
 	require.Equal(t, 10, buf.Written())
 	gotTail = buf.Tail()
 	require.Equal(t, all[4:], gotTail)
 
-	buf.DropBackN(10)
+	buf.DropOldestN(10)
 	require.Equal(t, 0, buf.Len())
 	require.Equal(t, 10, buf.Written())
 	require.Empty(t, buf.Tail())
 }
 
-func TestPopBack_PopBackN_Equivalence(t *testing.T) {
+func TestPopOldest_PopOldestN_Equivalence(t *testing.T) {
 	all := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
 	buf1 := tailbuf.New[string](10)
 	buf2 := tailbuf.New[string](10)
@@ -842,9 +842,9 @@ func TestPopBack_PopBackN_Equivalence(t *testing.T) {
 
 	require.Equal(t, tail1, tail2)
 
-	buf1.PopBackN(5)
+	buf1.PopOldestN(5)
 	for i := 0; i < 5; i++ {
-		buf2.PopBack()
+		buf2.PopOldest()
 	}
 
 	tailbuf.RequireEqualInternalState(t, buf1, buf2)
@@ -875,8 +875,8 @@ func TestBugA1_ApplyOverIteration(t *testing.T) {
 	t.Run("len=1_after_pops_at_non_zero_index", func(t *testing.T) {
 		buf := tailbuf.New[string](3)
 		buf.WriteAll("a", "b", "c", "d") // wrap: window=[d,b,c], oldestIdx=1
-		buf.PopFront()                   // remove d, len=2
-		buf.PopFront()                   // remove c, len=1, single item 'b' at window[1]
+		buf.PopNewest()                  // remove d, len=2
+		buf.PopNewest()                  // remove c, len=1, single item 'b' at window[1]
 
 		calls := 0
 		buf.Apply(func(s string) string {
@@ -904,7 +904,7 @@ func TestBugA1_ApplyOverIteration(t *testing.T) {
 		// Sanity check: the multi-item wrap case still works correctly.
 		buf := tailbuf.New[int](3)
 		buf.WriteAll(1, 2, 3, 4) // window=[4,2,3], oldestIdx=1
-		buf.PopFront()           // remove 4, len=2
+		buf.PopNewest()          // remove 4, len=2
 
 		calls := 0
 		buf.Apply(func(n int) int {
@@ -941,14 +941,14 @@ func TestBugA1_DoArguments(t *testing.T) {
 	}, calls)
 }
 
-// TestBugA2_SliceTailAfterPopBack covers the case where the live items do
+// TestBugA2_SliceTailAfterPopOldest covers the case where the live items do
 // not wrap but b.oldestIdx > 0. The pre-fix SliceTail indexed
 // window[start:end] directly, which silently returned items from before
 // the live region.
-func TestBugA2_SliceTailAfterPopBack(t *testing.T) {
+func TestBugA2_SliceTailAfterPopOldest(t *testing.T) {
 	buf := tailbuf.New[int](5)
 	buf.WriteAll(1, 2, 3) // oldestIdx=0, len=3
-	buf.PopBack()         // oldestIdx=1, len=2, tail=[2,3]
+	buf.PopOldest()       // oldestIdx=1, len=2, tail=[2,3]
 
 	require.Equal(t, []int{2, 3}, buf.Tail())
 	require.Equal(t, []int{2, 3}, tailbuf.SliceTail(buf, 0, 2))
@@ -963,8 +963,8 @@ func TestBugA3_SliceTailSingleItemElsewhere(t *testing.T) {
 	t.Run("after_pops_from_wrapped_state", func(t *testing.T) {
 		buf := tailbuf.New[string](3)
 		buf.WriteAll("a", "b", "c", "d") // window=[d,b,c]
-		buf.PopFront()                   // remove d, len=2
-		buf.PopFront()                   // remove c, len=1, item 'b' at window[1]
+		buf.PopNewest()                  // remove d, len=2
+		buf.PopNewest()                  // remove c, len=1, item 'b' at window[1]
 
 		require.Equal(t, []string{"b"}, buf.Tail())
 		require.Equal(t, []string{"b"}, tailbuf.SliceTail(buf, 0, 1))
@@ -973,8 +973,8 @@ func TestBugA3_SliceTailSingleItemElsewhere(t *testing.T) {
 	t.Run("after_popback_to_single", func(t *testing.T) {
 		buf := tailbuf.New[string](3)
 		buf.WriteAll("a", "b", "c") // window=[a,b,c]
-		buf.PopBack()               // remove a, item 'c' at window[2]
-		buf.PopBack()               // remove b, single item 'c' at window[2]
+		buf.PopOldest()             // remove a, item 'c' at window[2]
+		buf.PopOldest()             // remove b, single item 'c' at window[2]
 
 		require.Equal(t, []string{"c"}, buf.Tail())
 		require.Equal(t, []string{"c"}, tailbuf.SliceTail(buf, 0, 1))
@@ -1024,14 +1024,14 @@ func TestBugA4_SliceOutOfRange(t *testing.T) {
 	})
 }
 
-// TestBugA5_WriteAfterPopFront covers the state-corruption case where the
+// TestBugA5_WriteAfterPopNewest covers the state-corruption case where the
 // pre-fix write predicate (b.written > cap) caused an unwarranted eviction
-// after a PopFront freed space in the tail. The new predicate (b.len ==
+// after a PopNewest freed space in the tail. The new predicate (b.len ==
 // cap) only evicts when the tail is actually full.
-func TestBugA5_WriteAfterPopFront(t *testing.T) {
+func TestBugA5_WriteAfterPopNewest(t *testing.T) {
 	buf := tailbuf.New[string](3)
 	buf.WriteAll("a", "b", "c") // tail=[a,b,c], len=3, written=3
-	buf.PopFront()              // remove c, tail=[a,b], len=2, written=3
+	buf.PopNewest()             // remove c, tail=[a,b], len=2, written=3
 	require.Equal(t, []string{"a", "b"}, buf.Tail())
 
 	// With the pre-fix bug, this Write would evict 'a' (because written
@@ -1052,10 +1052,10 @@ func TestBugA5_WriteAfterPopFront(t *testing.T) {
 // Bounds/Offset/InBounds returned ranges that included indices no longer
 // (or never) live. The new versions track offset explicitly via Pop/Clear.
 func TestBugA6_BoundsAfterMutations(t *testing.T) {
-	t.Run("after_PopBack_advances_offset", func(t *testing.T) {
+	t.Run("after_PopOldest_advances_offset", func(t *testing.T) {
 		buf := tailbuf.New[string](3)
 		buf.WriteAll("a", "b", "c")
-		buf.PopBack() // 'a' is gone; offset advances by 1
+		buf.PopOldest() // 'a' is gone; offset advances by 1
 
 		start, end := buf.Bounds()
 		require.Equal(t, 1, start)
@@ -1067,10 +1067,10 @@ func TestBugA6_BoundsAfterMutations(t *testing.T) {
 		require.False(t, buf.InBounds(3))
 	})
 
-	t.Run("after_PopFront_shrinks_end", func(t *testing.T) {
+	t.Run("after_PopNewest_shrinks_end", func(t *testing.T) {
 		buf := tailbuf.New[string](3)
 		buf.WriteAll("a", "b", "c")
-		buf.PopFront() // 'c' is gone; offset unchanged, end shrinks
+		buf.PopNewest() // 'c' is gone; offset unchanged, end shrinks
 
 		start, end := buf.Bounds()
 		require.Equal(t, 0, start)
@@ -1099,10 +1099,10 @@ func TestBugA6_BoundsAfterMutations(t *testing.T) {
 		require.Equal(t, []string{"f"}, buf.Tail())
 	})
 
-	t.Run("after_DropBackN_advances_offset_by_n", func(t *testing.T) {
+	t.Run("after_DropOldestN_advances_offset_by_n", func(t *testing.T) {
 		buf := tailbuf.New[int](5)
 		buf.WriteAll(1, 2, 3, 4, 5)
-		buf.DropBackN(2) // remove 1, 2
+		buf.DropOldestN(2) // remove 1, 2
 
 		start, end := buf.Bounds()
 		require.Equal(t, 2, start)
@@ -1119,8 +1119,9 @@ func TestBugA6_BoundsAfterMutations(t *testing.T) {
 
 // TestBugA7_ZeroValueBuf covers the case where calls on a zero-value Buf
 // (i.e. var buf tailbuf.Buf[T]) panicked in the prior implementation
-// because the empty-state sentinel was stored as front==-1 in New, but the
-// zero value defaults front to 0 and indexes into a nil window. The new
+// because the empty-state sentinel was stored in a separate cursor field
+// (initialized to -1 by New as the "empty" marker), but the zero value
+// left that field defaulted to 0 and indexed into a nil window. The new
 // implementation uses len==0 as the empty check, so the zero value is
 // genuinely usable as an empty zero-capacity buffer.
 func TestBugA7_ZeroValueBuf(t *testing.T) {
@@ -1131,17 +1132,17 @@ func TestBugA7_ZeroValueBuf(t *testing.T) {
 	require.Equal(t, 0, buf.Written())
 	require.Equal(t, 0, buf.Offset())
 	require.Empty(t, buf.Tail())
-	require.Empty(t, buf.Front())
-	require.Empty(t, buf.Back())
-	require.Empty(t, buf.PopFront())
-	require.Empty(t, buf.PopBack())
-	require.Empty(t, buf.PopFrontN(3))
-	require.Empty(t, buf.PopBackN(3))
+	require.Empty(t, buf.Newest())
+	require.Empty(t, buf.Oldest())
+	require.Empty(t, buf.PopNewest())
+	require.Empty(t, buf.PopOldest())
+	require.Empty(t, buf.PopNewestN(3))
+	require.Empty(t, buf.PopOldestN(3))
 	require.Empty(t, tailbuf.SliceTail(&buf, 0, 5))
 	require.Empty(t, tailbuf.SliceNominal(&buf, 0, 5))
 
-	buf.DropBack()
-	buf.DropBackN(3)
+	buf.DropOldest()
+	buf.DropOldestN(3)
 	require.Equal(t, 0, buf.Len())
 
 	// Writes to a zero-cap buffer are silently dropped but still counted.
@@ -1167,19 +1168,19 @@ func TestBugA8_NewPanicMessage(t *testing.T) {
 	_ = tailbuf.New[int](-1)
 }
 
-// TestPopFrontWriteReuseNominalIndex documents (and pins) the model
-// described in the package doc: after PopFront, the next Write occupies
+// TestPopNewestWriteReuseNominalIndex documents (and pins) the model
+// described in the package doc: after PopNewest, the next Write occupies
 // the nominal index that the popped item had. This is a behavioral
 // contract worth a test so it doesn't drift unintentionally.
-func TestPopFrontWriteReuseNominalIndex(t *testing.T) {
+func TestPopNewestWriteReuseNominalIndex(t *testing.T) {
 	buf := tailbuf.New[string](3)
 	buf.WriteAll("a", "b", "c") // tail=[a,b,c], offset=0, len=3
-	require.Equal(t, "c", buf.Front())
+	require.Equal(t, "c", buf.Newest())
 	require.Equal(t, 2, buf.Offset()+buf.Len()-1) // c at nominal 2
 
-	buf.PopFront()  // tail=[a,b], offset=0, len=2
+	buf.PopNewest() // tail=[a,b], offset=0, len=2
 	buf.Write("c2") // tail=[a,b,c2], offset=0, len=3; c2 at nominal 2
-	require.Equal(t, "c2", buf.Front())
+	require.Equal(t, "c2", buf.Newest())
 	require.Equal(t, 2, buf.Offset()+buf.Len()-1)
 	start, end := buf.Bounds()
 	require.Equal(t, 0, start)
@@ -1201,17 +1202,17 @@ func TestSliceTail_AfterClearAndRefill(t *testing.T) {
 	require.Empty(t, tailbuf.SliceNominal(buf, 0, 5)) // pre-clear range is gone
 }
 
-// TestPopFront_PopFrontN_Equivalence mirrors TestPopBack_PopBackN_Equivalence
-// for the front-end pop variants.
-func TestPopFront_PopFrontN_Equivalence(t *testing.T) {
+// TestPopNewest_PopNewestN_Equivalence mirrors TestPopOldest_PopOldestN_Equivalence
+// for the newest-end pop variants.
+func TestPopNewest_PopNewestN_Equivalence(t *testing.T) {
 	all := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
 	buf1 := tailbuf.New[string](10).WriteAll(all...)
 	buf2 := tailbuf.New[string](10).WriteAll(all...)
 
-	popped1 := buf1.PopFrontN(4)
+	popped1 := buf1.PopNewestN(4)
 	var popped2 []string
 	for i := 0; i < 4; i++ {
-		popped2 = append([]string{buf2.PopFront()}, popped2...)
+		popped2 = append([]string{buf2.PopNewest()}, popped2...)
 	}
 
 	require.Equal(t, popped1, popped2)
@@ -1219,16 +1220,16 @@ func TestPopFront_PopFrontN_Equivalence(t *testing.T) {
 	require.Equal(t, buf1.Tail(), buf2.Tail())
 }
 
-// TestDropBack_DropBackN_Equivalence is the analogous parity test for the
-// drop-back variants.
-func TestDropBack_DropBackN_Equivalence(t *testing.T) {
+// TestDropOldest_DropOldestN_Equivalence is the analogous parity test for the
+// drop-oldest variants.
+func TestDropOldest_DropOldestN_Equivalence(t *testing.T) {
 	all := []rune{'a', 'b', 'c', 'd', 'e'}
 	buf1 := tailbuf.New[rune](5).WriteAll(all...)
 	buf2 := tailbuf.New[rune](5).WriteAll(all...)
 
-	buf1.DropBackN(3)
+	buf1.DropOldestN(3)
 	for i := 0; i < 3; i++ {
-		buf2.DropBack()
+		buf2.DropOldest()
 	}
 	tailbuf.RequireEqualInternalState(t, buf1, buf2)
 }
@@ -1329,27 +1330,27 @@ func TestApplyDo_WrappedLen3Plus(t *testing.T) {
 	})
 }
 
-// TestPopFrontWriteReuseNominalIndex_AfterEviction extends
-// TestPopFrontWriteReuseNominalIndex into the post-eviction regime where
+// TestPopNewestWriteReuseNominalIndex_AfterEviction extends
+// TestPopNewestWriteReuseNominalIndex into the post-eviction regime where
 // Offset is non-zero. The original review found that the offset=0 case
-// alone would not catch a regression that special-cased PopFront-then-Write
+// alone would not catch a regression that special-cased PopNewest-then-Write
 // against a non-zero offset.
-func TestPopFrontWriteReuseNominalIndex_AfterEviction(t *testing.T) {
+func TestPopNewestWriteReuseNominalIndex_AfterEviction(t *testing.T) {
 	buf := tailbuf.New[string](3)
 	buf.WriteAll("a", "b", "c", "d", "e") // tail=[c,d,e], offset=2
 	require.Equal(t, []string{"c", "d", "e"}, buf.Tail())
 	require.Equal(t, 2, buf.Offset())
-	require.Equal(t, "e", buf.Front())
+	require.Equal(t, "e", buf.Newest())
 	require.Equal(t, 4, buf.Offset()+buf.Len()-1) // e at nominal 4
 
-	buf.PopFront() // tail=[c,d], offset still 2, len=2
+	buf.PopNewest() // tail=[c,d], offset still 2, len=2
 	require.Equal(t, []string{"c", "d"}, buf.Tail())
 	require.Equal(t, 2, buf.Offset())
 
 	buf.Write("x") // tail=[c,d,x], offset=2; x at nominal 4 (reuses e's slot)
 	require.Equal(t, []string{"c", "d", "x"}, buf.Tail())
-	require.Equal(t, "x", buf.Front())
-	require.Equal(t, 2, buf.Offset(), "Write after PopFront must not advance offset")
+	require.Equal(t, "x", buf.Newest())
+	require.Equal(t, 2, buf.Offset(), "Write after PopNewest must not advance offset")
 	require.Equal(t, 4, buf.Offset()+buf.Len()-1, "x reuses the popped item's nominal index")
 
 	start, end := buf.Bounds()
@@ -1514,7 +1515,7 @@ func TestZeroValue_vs_NewZero_NilObservability(t *testing.T) {
 // TestZeroCap_OffsetTracksWritten pins the contract that, for a
 // zero-capacity buffer, every Write/WriteAll advances Offset in lockstep
 // with Written. This keeps the invariant Offset()+Len() == Written()
-// intact (equality holds since no PopFront can run on a cap=0 buffer)
+// intact (equality holds since no PopNewest can run on a cap=0 buffer)
 // and is the natural consequence of treating cap=0 writes as immediate
 // eviction-on-write.
 func TestZeroCap_OffsetTracksWritten(t *testing.T) {
@@ -1536,7 +1537,7 @@ func TestZeroCap_OffsetTracksWritten(t *testing.T) {
 	require.Equal(t, 4, end)
 	require.Equal(t, 0, buf.Len())
 
-	// Invariant: Offset()+Len() == Written() when no PopFront has run.
+	// Invariant: Offset()+Len() == Written() when no PopNewest has run.
 	require.Equal(t, buf.Written(), buf.Offset()+buf.Len())
 
 	// And the zero value of Buf must behave identically.
@@ -1567,18 +1568,18 @@ func TestWriteAll_EmptyVarargsIsNoOp(t *testing.T) {
 	require.Equal(t, 0, zeroCap.Written())
 }
 
-// TestPeek_FrontBackConsistency pins that Peek at the boundary positions
-// agrees with Front and Back. A refactor that diverged one of the three
+// TestPeek_NewestOldestConsistency pins that Peek at the boundary positions
+// agrees with Newest and Oldest. A refactor that diverged one of the three
 // code paths would be caught by this.
-func TestPeek_FrontBackConsistency(t *testing.T) {
+func TestPeek_NewestOldestConsistency(t *testing.T) {
 	buf := tailbuf.New[int](4)
 	// Drive the buffer into a wrapped state with len == cap.
 	for i := 0; i < 6; i++ {
 		buf.Write(i * 10)
 	}
 	// Live tail: [20, 30, 40, 50].
-	require.Equal(t, buf.Peek(0), buf.Back(), "Peek(0) == Back()")
-	require.Equal(t, buf.Peek(buf.Len()-1), buf.Front(), "Peek(Len-1) == Front()")
+	require.Equal(t, buf.Peek(0), buf.Oldest(), "Peek(0) == Oldest()")
+	require.Equal(t, buf.Peek(buf.Len()-1), buf.Newest(), "Peek(Len-1) == Newest()")
 }
 
 // TestSlice_BoundaryAtLen covers the edge case where start == end == Len:
@@ -1653,11 +1654,11 @@ func TestDo_EmptyBuffer(t *testing.T) {
 func TestApplyDo_WrappedLen2_ModularCrossing(t *testing.T) {
 	mk := func() *tailbuf.Buf[int] {
 		// WriteAll(1,2,3,4,5) on cap=3 leaves window=[4,5,3] oldest=2 len=3.
-		// PopFront removes 5 (newest); window=[4,_,3] oldest=2 len=2.
+		// PopNewest removes 5 (newest); window=[4,_,3] oldest=2 len=2.
 		// The two live items, oldest-to-newest, are 3 then 4. Iteration
 		// visits physical indices 2 (value 3) then 0 (value 4).
 		buf := tailbuf.New[int](3).WriteAll(1, 2, 3, 4, 5)
-		buf.PopFront()
+		buf.PopNewest()
 		return buf
 	}
 
@@ -1707,42 +1708,42 @@ func TestInvariantWalker(t *testing.T) {
 		{func() { buf.Write(2) }, "Write 2"},
 		{func() { buf.WriteAll(3, 4) }, "WriteAll 3,4"},
 		{func() { buf.Write(5) }, "Write 5 (eviction)"},
-		{func() { buf.PopFront() }, "PopFront"},
+		{func() { buf.PopNewest() }, "PopNewest"},
 		{func() { buf.Write(6) }, "Write 6"},
-		{func() { buf.PopBack() }, "PopBack"},
-		{func() { buf.DropBack() }, "DropBack"},
-		{func() { buf.PopFrontN(2) }, "PopFrontN(2)"},
+		{func() { buf.PopOldest() }, "PopOldest"},
+		{func() { buf.DropOldest() }, "DropOldest"},
+		{func() { buf.PopNewestN(2) }, "PopNewestN(2)"},
 		{func() { buf.WriteAll(7, 8, 9, 10, 11) }, "WriteAll 7,8,9,10,11"},
-		{func() { buf.PopBackN(2) }, "PopBackN(2)"},
-		{func() { buf.DropBackN(99) }, "DropBackN(99)"},
+		{func() { buf.PopOldestN(2) }, "PopOldestN(2)"},
+		{func() { buf.DropOldestN(99) }, "DropOldestN(99)"},
 		{func() { buf.WriteAll(12, 13) }, "WriteAll 12,13"},
 		{func() { buf.Clear() }, "Clear"},
 		{func() { buf.Write(14) }, "Write 14"},
 		{func() { buf.Reset() }, "Reset"},
 		{func() { buf.Write(15) }, "Write 15"},
-		// Drive into wrap, then drain via PopBackN's n>=len branch
+		// Drive into wrap, then drain via PopOldestN's n>=len branch
 		// (routes through Clear). Without this, walker coverage of
-		// PopBackN's empty path is restricted to the non-wrap case.
+		// PopOldestN's empty path is restricted to the non-wrap case.
 		{func() { buf.WriteAll(16, 17, 18, 19) }, "WriteAll 16,17,18,19 (wrap)"},
-		{func() { buf.PopBackN(99) }, "PopBackN(99) from wrap"},
-		// Drive into wrap again, then drain via PopFrontN's n>=len
+		{func() { buf.PopOldestN(99) }, "PopOldestN(99) from wrap"},
+		// Drive into wrap again, then drain via PopNewestN's n>=len
 		// branch (explicit oldestIdx=0 pin). Without this, the explicit
-		// front-end pin is only exercised by TestCanonicalEmpty.
+		// newest-end pin is only exercised by TestCanonicalEmpty.
 		{func() { buf.WriteAll(20, 21, 22, 23, 24) }, "WriteAll 20..24 (wrap)"},
-		{func() { buf.PopFrontN(99) }, "PopFrontN(99) from wrap"},
-		// Exercise DropFront and DropFrontN through the walker so the
+		{func() { buf.PopNewestN(99) }, "PopNewestN(99) from wrap"},
+		// Exercise DropNewest and DropNewestN through the walker so the
 		// new discard methods are covered by CheckInvariants alongside
-		// every other state transition. WriteAll 25..29 wraps; DropFront
+		// every other state transition. WriteAll 25..29 wraps; DropNewest
 		// shrinks from the newest end without touching offset; the
-		// subsequent DropFrontN(2) covers the partial branch; WriteAll
-		// 30..34 wraps again and DropFrontN(99) covers the n>=len branch
+		// subsequent DropNewestN(2) covers the partial branch; WriteAll
+		// 30..34 wraps again and DropNewestN(99) covers the n>=len branch
 		// (explicit oldestIdx=0 pin), now with CheckInvariants firing
 		// after each step.
 		{func() { buf.WriteAll(25, 26, 27, 28, 29) }, "WriteAll 25..29 (wrap)"},
-		{func() { buf.DropFront() }, "DropFront from wrap"},
-		{func() { buf.DropFrontN(2) }, "DropFrontN(2) partial"},
+		{func() { buf.DropNewest() }, "DropNewest from wrap"},
+		{func() { buf.DropNewestN(2) }, "DropNewestN(2) partial"},
 		{func() { buf.WriteAll(30, 31, 32, 33, 34) }, "WriteAll 30..34 (wrap)"},
-		{func() { buf.DropFrontN(99) }, "DropFrontN(99) from wrap"},
+		{func() { buf.DropNewestN(99) }, "DropNewestN(99) from wrap"},
 	}
 	for _, step := range steps {
 		step.do()
@@ -1755,12 +1756,12 @@ func TestInvariantWalker(t *testing.T) {
 // TestInvariantWalker_ZeroCap walks the cap=0 buffer through writes, drops,
 // pops, and resets, validating the invariants at each step. In particular,
 // every Write/WriteAll must keep offset+len <= written; the documented
-// equality (when no PopFront has run) means offset == written here.
+// equality (when no PopNewest has run) means offset == written here.
 func TestInvariantWalker_ZeroCap(t *testing.T) {
 	check := func(buf *tailbuf.Buf[int], label string) {
 		t.Run(label, func(t *testing.T) {
 			tailbuf.CheckInvariants(t, buf)
-			// Stronger invariant for cap=0 with no PopFront: equality.
+			// Stronger invariant for cap=0 with no PopNewest: equality.
 			require.Equal(t, buf.Written(), buf.Offset(), "cap=0: offset == written")
 		})
 	}
@@ -1772,18 +1773,18 @@ func TestInvariantWalker_ZeroCap(t *testing.T) {
 	check(buf, "after Write")
 	buf.WriteAll(2, 3, 4)
 	check(buf, "after WriteAll(3)")
-	// PopFront/PopBack/DropBack must be no-ops on a cap=0 buffer; pin that
+	// PopNewest/PopOldest/DropOldest must be no-ops on a cap=0 buffer; pin that
 	// alongside the rest of the invariants.
-	require.Equal(t, 0, buf.PopFront(), "PopFront on cap=0 returns zero value")
-	check(buf, "after PopFront")
-	require.Equal(t, 0, buf.PopBack(), "PopBack on cap=0 returns zero value")
-	check(buf, "after PopBack")
-	buf.DropBack()
-	check(buf, "after DropBack")
-	buf.DropFront() // must also be a no-op on cap=0
-	check(buf, "after DropFront")
-	buf.DropFrontN(99) // must also be a no-op on cap=0
-	check(buf, "after DropFrontN")
+	require.Equal(t, 0, buf.PopNewest(), "PopNewest on cap=0 returns zero value")
+	check(buf, "after PopNewest")
+	require.Equal(t, 0, buf.PopOldest(), "PopOldest on cap=0 returns zero value")
+	check(buf, "after PopOldest")
+	buf.DropOldest()
+	check(buf, "after DropOldest")
+	buf.DropNewest() // must also be a no-op on cap=0
+	check(buf, "after DropNewest")
+	buf.DropNewestN(99) // must also be a no-op on cap=0
+	check(buf, "after DropNewestN")
 	buf.Clear() // no-op on empty; offset unchanged
 	check(buf, "after Clear")
 	buf.Reset()
@@ -1796,46 +1797,46 @@ func TestInvariantWalker_ZeroCap(t *testing.T) {
 	check(&z, "zero value fresh")
 	z.Write(1)
 	check(&z, "zero value after Write")
-	z.PopFront() // exercises the nil-window guard
-	check(&z, "zero value after PopFront")
-	z.PopBack()
-	check(&z, "zero value after PopBack")
-	z.DropFront()
-	check(&z, "zero value after DropFront")
-	z.DropFrontN(99)
-	check(&z, "zero value after DropFrontN")
+	z.PopNewest() // exercises the nil-window guard
+	check(&z, "zero value after PopNewest")
+	z.PopOldest()
+	check(&z, "zero value after PopOldest")
+	z.DropNewest()
+	check(&z, "zero value after DropNewest")
+	z.DropNewestN(99)
+	check(&z, "zero value after DropNewestN")
 }
 
-// TestDropFront covers the no-allocation front-end discard variant.
-// Mirrors the existing PopFront tests but checks that DropFront leaves
-// the buffer in the same state PopFront would, minus the returned value.
-func TestDropFront(t *testing.T) {
+// TestDropNewest covers the no-allocation newest-end discard variant.
+// Mirrors the existing PopNewest tests but checks that DropNewest leaves
+// the buffer in the same state PopNewest would, minus the returned value.
+func TestDropNewest(t *testing.T) {
 	t.Run("no-op on empty New", func(t *testing.T) {
 		buf := tailbuf.New[int](3)
-		buf.DropFront()
+		buf.DropNewest()
 		require.Zero(t, buf.Len())
 		tailbuf.CheckInvariants(t, buf)
 	})
 
 	t.Run("no-op on zero value", func(t *testing.T) {
 		var z tailbuf.Buf[int]
-		z.DropFront()
+		z.DropNewest()
 		require.Zero(t, z.Len())
 		tailbuf.CheckInvariants(t, &z)
 	})
 
-	t.Run("matches PopFront's state effect", func(t *testing.T) {
-		// Drive both buffers through identical sequences. PopFront returns
-		// a value (discarded here); DropFront does not. End state must be
+	t.Run("matches PopNewest's state effect", func(t *testing.T) {
+		// Drive both buffers through identical sequences. PopNewest returns
+		// a value (discarded here); DropNewest does not. End state must be
 		// bit-identical.
 		mk := func() *tailbuf.Buf[int] {
 			return tailbuf.New[int](3).WriteAll(1, 2, 3, 4)
 		}
 		popped := mk()
-		_ = popped.PopFront() // returns 4 (newest)
+		_ = popped.PopNewest() // returns 4 (newest)
 
 		dropped := mk()
-		dropped.DropFront()
+		dropped.DropNewest()
 
 		tailbuf.RequireEqualInternalState(t, popped, dropped)
 		require.Equal(t, []int{2, 3}, dropped.Tail())
@@ -1844,19 +1845,19 @@ func TestDropFront(t *testing.T) {
 
 	t.Run("does not change Offset", func(t *testing.T) {
 		buf := tailbuf.New[int](3).WriteAll(1, 2, 3, 4) // offset=1
-		buf.DropFront()
-		require.Equal(t, 1, buf.Offset(), "DropFront must not advance Offset")
+		buf.DropNewest()
+		require.Equal(t, 1, buf.Offset(), "DropNewest must not advance Offset")
 	})
 
 	t.Run("canonical-empty pin: drain to empty", func(t *testing.T) {
 		buf := tailbuf.New[int](3).WriteAll(1, 2, 3, 4) // wrap: oldestIdx=1
-		buf.DropFront()
-		buf.DropFront()
-		buf.DropFront()
+		buf.DropNewest()
+		buf.DropNewest()
+		buf.DropNewest()
 		require.Zero(t, buf.Len())
-		// Compare against the canonical empty state reached via PopFrontN.
+		// Compare against the canonical empty state reached via PopNewestN.
 		ref := tailbuf.New[int](3).WriteAll(1, 2, 3, 4)
-		ref.PopFrontN(99)
+		ref.PopNewestN(99)
 		tailbuf.RequireEqualInternalState(t, buf, ref)
 		tailbuf.CheckInvariants(t, buf)
 	})
@@ -1866,7 +1867,7 @@ func TestDropFront(t *testing.T) {
 		// wrap. Exercise the no-wrap path explicitly so a regression in
 		// the modular calc that special-cased oldestIdx==0 is caught.
 		buf := tailbuf.New[int](4).WriteAll(1, 2, 3) // oldestIdx=0, len=3
-		buf.DropFront()
+		buf.DropNewest()
 		require.Equal(t, []int{1, 2}, buf.Tail())
 		tailbuf.CheckInvariants(t, buf)
 	})
@@ -1876,76 +1877,76 @@ func TestDropFront(t *testing.T) {
 		// pin from a state where the cursor was already at 0, which is
 		// trivially correct but worth pinning so the path is covered.
 		buf := tailbuf.New[int](3).Write(42) // oldestIdx=0, len=1
-		buf.DropFront()
+		buf.DropNewest()
 		require.Zero(t, buf.Len())
 		tailbuf.CheckInvariants(t, buf)
 	})
 }
 
-// TestDropFrontN covers the bulk no-allocation front-end discard.
-func TestDropFrontN(t *testing.T) {
+// TestDropNewestN covers the bulk no-allocation newest-end discard.
+func TestDropNewestN(t *testing.T) {
 	t.Run("no-op cases", func(t *testing.T) {
 		buf := tailbuf.New[int](3)
-		buf.DropFrontN(99) // empty buffer
+		buf.DropNewestN(99) // empty buffer
 		require.Zero(t, buf.Len())
 
 		buf.WriteAll(1, 2, 3)
-		buf.DropFrontN(0) // n == 0
+		buf.DropNewestN(0) // n == 0
 		require.Equal(t, []int{1, 2, 3}, buf.Tail())
-		buf.DropFrontN(-5) // negative n
+		buf.DropNewestN(-5) // negative n
 		require.Equal(t, []int{1, 2, 3}, buf.Tail())
 	})
 
-	t.Run("matches PopFrontN's state effect", func(t *testing.T) {
+	t.Run("matches PopNewestN's state effect", func(t *testing.T) {
 		mk := func() *tailbuf.Buf[int] {
 			return tailbuf.New[int](5).WriteAll(1, 2, 3, 4, 5)
 		}
 
 		// Partial drain.
 		popped := mk()
-		_ = popped.PopFrontN(2) // [4, 5]
+		_ = popped.PopNewestN(2) // [4, 5]
 		dropped := mk()
-		dropped.DropFrontN(2)
+		dropped.DropNewestN(2)
 		tailbuf.RequireEqualInternalState(t, popped, dropped)
 
 		// Drain larger than Len.
 		popped = mk()
-		_ = popped.PopFrontN(99)
+		_ = popped.PopNewestN(99)
 		dropped = mk()
-		dropped.DropFrontN(99)
+		dropped.DropNewestN(99)
 		tailbuf.RequireEqualInternalState(t, popped, dropped)
 	})
 
 	t.Run("n >= len from wrapped state hits canonical empty", func(t *testing.T) {
 		buf := tailbuf.New[int](3).WriteAll(1, 2, 3, 4, 5) // wrap: oldestIdx=2
-		buf.DropFrontN(99)
+		buf.DropNewestN(99)
 		require.Zero(t, buf.Len())
 		tailbuf.CheckInvariants(t, buf)
 
-		// Verify the explicit oldestIdx=0 assignment matched PopFrontN's
+		// Verify the explicit oldestIdx=0 assignment matched PopNewestN's
 		// path; offsets must match (neither advances offset).
 		ref := tailbuf.New[int](3).WriteAll(1, 2, 3, 4, 5)
-		ref.PopFrontN(99)
+		ref.PopNewestN(99)
 		tailbuf.RequireEqualInternalState(t, buf, ref)
 	})
 
-	t.Run("partial drain from wrapped state matches PopFrontN", func(t *testing.T) {
-		// The "matches PopFrontN's state effect" subtest above uses cap=5
+	t.Run("partial drain from wrapped state matches PopNewestN", func(t *testing.T) {
+		// The "matches PopNewestN's state effect" subtest above uses cap=5
 		// WriteAll(1..5) which is no-wrap (oldestIdx=0). The partial-drain
 		// branch's modular arithmetic at (oldestIdx + base + i) % winLen
 		// only meaningfully differs from naive indexing when oldestIdx > 0,
 		// so exercise that explicitly.
 		popped := tailbuf.New[int](3).WriteAll(1, 2, 3, 4, 5) // wrap: oldestIdx=2
-		_ = popped.PopFrontN(1)                               // returns [5] (newest)
+		_ = popped.PopNewestN(1)                              // returns [5] (newest)
 		dropped := tailbuf.New[int](3).WriteAll(1, 2, 3, 4, 5)
-		dropped.DropFrontN(1)
+		dropped.DropNewestN(1)
 		tailbuf.RequireEqualInternalState(t, popped, dropped)
 	})
 
 	t.Run("does not change Offset", func(t *testing.T) {
 		buf := tailbuf.New[int](3).WriteAll(1, 2, 3, 4, 5) // offset=2
-		buf.DropFrontN(2)
-		require.Equal(t, 2, buf.Offset(), "DropFrontN must not advance Offset")
+		buf.DropNewestN(2)
+		require.Equal(t, 2, buf.Offset(), "DropNewestN must not advance Offset")
 	})
 }
 
@@ -2032,7 +2033,7 @@ func TestSliceNominal_NegativeStartClipsNotPanics(t *testing.T) {
 // "Canonicalize empty-buffer state" change: every operation that empties
 // the buffer leaves it in the canonical empty state (oldestIdx == 0).
 // Without this test, removing any of the three `if b.len == 0 {
-// b.oldestIdx = 0 }` lines in PopFront / PopBack / DropBack compiles
+// b.oldestIdx = 0 }` lines in PopNewest / PopOldest / DropOldest compiles
 // and passes every other test, silently reintroducing the asymmetry.
 func TestCanonicalEmpty_ViaEveryRoute(t *testing.T) {
 	// Drive the buffer into a wrapped state where oldestIdx != 0, so that
@@ -2045,38 +2046,38 @@ func TestCanonicalEmpty_ViaEveryRoute(t *testing.T) {
 		return tailbuf.New[int](3).WriteAll(1, 2, 3, 4)
 	}
 
-	t.Run("PopBack to empty", func(t *testing.T) {
+	t.Run("PopOldest to empty", func(t *testing.T) {
 		buf := mkWrapped()
 		for i := 0; i < 3; i++ {
-			buf.PopBack()
+			buf.PopOldest()
 		}
 		require.Zero(t, buf.Len())
 		tailbuf.CheckInvariants(t, buf)
 	})
 
-	t.Run("DropBack to empty", func(t *testing.T) {
+	t.Run("DropOldest to empty", func(t *testing.T) {
 		buf := mkWrapped()
 		for i := 0; i < 3; i++ {
-			buf.DropBack()
+			buf.DropOldest()
 		}
 		require.Zero(t, buf.Len())
 		tailbuf.CheckInvariants(t, buf)
 	})
 
-	t.Run("PopFront to empty", func(t *testing.T) {
+	t.Run("PopNewest to empty", func(t *testing.T) {
 		buf := mkWrapped()
 		for i := 0; i < 3; i++ {
-			buf.PopFront()
+			buf.PopNewest()
 		}
 		require.Zero(t, buf.Len())
 		tailbuf.CheckInvariants(t, buf)
 	})
 
 	// Converging internal state — the load-bearing assertions. Without
-	// the canonical-empty pin in PopFront/PopBack/DropBack, draining a
+	// the canonical-empty pin in PopNewest/PopOldest/DropOldest, draining a
 	// wrapped buffer via the single-item routes would leave oldestIdx
-	// mid-wrap, while the bulk N-variants (Clear path for back-end,
-	// explicit oldestIdx=0 for front-end) would always land at 0.
+	// mid-wrap, while the bulk N-variants (Clear path for oldest-end,
+	// explicit oldestIdx=0 for newest-end) would always land at 0.
 	// RequireEqualInternalState compares oldestIdx unconditionally, so
 	// these pairwise comparisons fail loudly if the pin is removed.
 	//
@@ -2086,28 +2087,28 @@ func TestCanonicalEmpty_ViaEveryRoute(t *testing.T) {
 	// Tail()/Peek() assertions would pass even with the pin removed.
 	// CheckInvariants caught the regression there; these comparisons
 	// catch it without needing CheckInvariants to be load-bearing.)
-	t.Run("converging internal state: back-end routes", func(t *testing.T) {
+	t.Run("converging internal state: oldest-end routes", func(t *testing.T) {
 		a := mkWrapped()
 		for i := 0; i < 3; i++ {
-			a.PopBack()
+			a.PopOldest()
 		}
 		b := mkWrapped()
 		for i := 0; i < 3; i++ {
-			b.DropBack()
+			b.DropOldest()
 		}
 		c := mkWrapped()
-		c.DropBackN(99) // routes through Clear; always pins oldestIdx to 0
+		c.DropOldestN(99) // routes through Clear; always pins oldestIdx to 0
 		tailbuf.RequireEqualInternalState(t, a, b)
 		tailbuf.RequireEqualInternalState(t, a, c)
 	})
 
-	t.Run("converging internal state: front-end routes", func(t *testing.T) {
+	t.Run("converging internal state: newest-end routes", func(t *testing.T) {
 		a := mkWrapped()
 		for i := 0; i < 3; i++ {
-			a.PopFront()
+			a.PopNewest()
 		}
 		b := mkWrapped()
-		b.PopFrontN(99) // takes the n >= len branch with explicit oldestIdx=0
+		b.PopNewestN(99) // takes the n >= len branch with explicit oldestIdx=0
 		tailbuf.RequireEqualInternalState(t, a, b)
 	})
 }
@@ -2172,29 +2173,29 @@ func TestTail_MutationUnderWrapDoesNotCorruptBuffer(t *testing.T) {
 	require.Equal(t, []int{3, 4, 5, 6}, buf.Tail())
 }
 
-// TestPeekFrontBack_AfterPopFront pins that the Peek(0)==Back(),
-// Peek(Len-1)==Front() consistency holds after a PopFront has shrunk the
-// live range. The existing TestPeek_FrontBackConsistency only tests
+// TestPeekNewestOldest_AfterPopNewest pins that the Peek(0)==Oldest(),
+// Peek(Len-1)==Newest() consistency holds after a PopNewest has shrunk the
+// live range. The existing TestPeek_NewestOldestConsistency only tests
 // against a freshly-wrapped full buffer.
-func TestPeekFrontBack_AfterPopFront(t *testing.T) {
+func TestPeekNewestOldest_AfterPopNewest(t *testing.T) {
 	buf := tailbuf.New[int](4)
 	// Drive to wrap: cap=4, WriteAll(1..5) evicts 1; window=[5,2,3,4],
 	// oldest=1, len=4. Live tail oldest-to-newest is [2,3,4,5].
 	buf.WriteAll(1, 2, 3, 4, 5)
 	require.Equal(t, []int{2, 3, 4, 5}, buf.Tail())
 
-	// PopFront: newest (5) removed; oldest unchanged.
-	popped := buf.PopFront()
+	// PopNewest: newest (5) removed; oldest unchanged.
+	popped := buf.PopNewest()
 	require.Equal(t, 5, popped)
 	require.Equal(t, 3, buf.Len())
 	require.Equal(t, []int{2, 3, 4}, buf.Tail())
 
-	require.Equal(t, buf.Back(), buf.Peek(0), "Peek(0) must equal Back after PopFront")
-	require.Equal(t, buf.Front(), buf.Peek(buf.Len()-1), "Peek(Len-1) must equal Front after PopFront")
+	require.Equal(t, buf.Oldest(), buf.Peek(0), "Peek(0) must equal Oldest after PopNewest")
+	require.Equal(t, buf.Newest(), buf.Peek(buf.Len()-1), "Peek(Len-1) must equal Newest after PopNewest")
 
-	// Specifically: live tail is [2,3,4]; Back=2, Front=4.
-	require.Equal(t, 2, buf.Back())
-	require.Equal(t, 4, buf.Front())
+	// Specifically: live tail is [2,3,4]; Oldest=2, Newest=4.
+	require.Equal(t, 2, buf.Oldest())
+	require.Equal(t, 4, buf.Newest())
 }
 
 // TestChaining_ReturnsReceiver pins that the mutating methods documented
@@ -2228,19 +2229,19 @@ func TestChaining_ReturnsReceiver(t *testing.T) {
 	})
 }
 
-// TestPopBack_ThenWrite_Wrapped pins that Write after PopBack on a wrapped
+// TestPopOldest_ThenWrite_Wrapped pins that Write after PopOldest on a wrapped
 // buffer reuses the freed slot (no extra eviction). The A5 regression
-// covers Write-after-PopFront; this is the symmetric case that A5+A6
+// covers Write-after-PopNewest; this is the symmetric case that A5+A6
 // together imply but no single test exercises directly.
-func TestPopBack_ThenWrite_Wrapped(t *testing.T) {
+func TestPopOldest_ThenWrite_Wrapped(t *testing.T) {
 	buf := tailbuf.New[int](3).WriteAll(1, 2, 3, 4) // window=[4,2,3], oldest=1, len=3
 	require.Equal(t, []int{2, 3, 4}, buf.Tail())
 	require.Equal(t, 1, buf.Offset())
 
-	popped := buf.PopBack()
+	popped := buf.PopOldest()
 	require.Equal(t, 2, popped)
 	require.Equal(t, []int{3, 4}, buf.Tail())
-	require.Equal(t, 2, buf.Offset(), "PopBack must advance Offset")
+	require.Equal(t, 2, buf.Offset(), "PopOldest must advance Offset")
 
 	// The next Write must NOT evict — there's a free slot now.
 	buf.Write(5)
@@ -2256,32 +2257,32 @@ func TestPopBack_ThenWrite_Wrapped(t *testing.T) {
 	require.Equal(t, 6, buf.Written())
 }
 
-// TestPopFront_PopFrontN_Equivalence_Wrapped is the wrapped-state mirror of
-// TestPopFront_PopFrontN_Equivalence. The non-wrapped equivalence test
-// alone leaves the modular-index arithmetic in PopFrontN's partial path
+// TestPopNewest_PopNewestN_Equivalence_Wrapped is the wrapped-state mirror of
+// TestPopNewest_PopNewestN_Equivalence. The non-wrapped equivalence test
+// alone leaves the modular-index arithmetic in PopNewestN's partial path
 // underexercised: in that test oldestIdx=0 so (oldestIdx + base + i) %
 // winLen reduces trivially. Running the same equivalence in a wrapped
 // state forces the modular reduction to do real work, which is where a
-// regression in PopFrontN's index math would actually manifest.
-func TestPopFront_PopFrontN_Equivalence_Wrapped(t *testing.T) {
+// regression in PopNewestN's index math would actually manifest.
+func TestPopNewest_PopNewestN_Equivalence_Wrapped(t *testing.T) {
 	// cap=5 + 8 writes ⇒ oldestIdx=3, live items wrap the physical end.
-	// Tail at this point is [4,5,6,7,8]; the partial PopFrontN(3) below
+	// Tail at this point is [4,5,6,7,8]; the partial PopNewestN(3) below
 	// must remove 6,7,8 in oldest-to-newest order.
 	all := []int{1, 2, 3, 4, 5, 6, 7, 8}
 	buf1 := tailbuf.New[int](5).WriteAll(all...)
 	buf2 := tailbuf.New[int](5).WriteAll(all...)
 	require.Equal(t, []int{4, 5, 6, 7, 8}, buf1.Tail())
 
-	popped1 := buf1.PopFrontN(3)
+	popped1 := buf1.PopNewestN(3)
 	var popped2 []int
 	for i := 0; i < 3; i++ {
-		popped2 = append([]int{buf2.PopFront()}, popped2...)
+		popped2 = append([]int{buf2.PopNewest()}, popped2...)
 	}
 
 	require.Equal(t, []int{6, 7, 8}, popped1,
-		"PopFrontN must return removed items oldest-to-newest")
+		"PopNewestN must return removed items oldest-to-newest")
 	require.Equal(t, popped1, popped2,
-		"PopFrontN(n) and n×PopFront must yield the same result")
+		"PopNewestN(n) and n×PopNewest must yield the same result")
 	tailbuf.RequireEqualInternalState(t, buf1, buf2)
 	tailbuf.CheckInvariants(t, buf1)
 }
@@ -2451,18 +2452,18 @@ func TestApplyDo_NilFnPanicsUniformlyAcrossStates(t *testing.T) {
 	})
 }
 
-// TestPopBack_PopBackN_Equivalence_Wrapped is the back-end mirror of
-// TestPopFront_PopFrontN_Equivalence_Wrapped. The non-wrapped equivalence
-// test alone (TestPopBack_PopBackN_Equivalence) leaves the modular-index
-// arithmetic in PopBackN's partial path underexercised: in that test
+// TestPopOldest_PopOldestN_Equivalence_Wrapped is the oldest-end mirror of
+// TestPopNewest_PopNewestN_Equivalence_Wrapped. The non-wrapped equivalence
+// test alone (TestPopOldest_PopOldestN_Equivalence) leaves the modular-index
+// arithmetic in PopOldestN's partial path underexercised: in that test
 // oldestIdx=0 and oldestIdx advances along the physical end of the
 // window without ever wrapping back to 0. Running the same equivalence
 // in a wrapped state forces the modular reduction to do real work,
-// which is where a regression in PopBackN's loop math would actually
+// which is where a regression in PopOldestN's loop math would actually
 // manifest.
-func TestPopBack_PopBackN_Equivalence_Wrapped(t *testing.T) {
+func TestPopOldest_PopOldestN_Equivalence_Wrapped(t *testing.T) {
 	// cap=5 + 8 writes ⇒ oldestIdx=3, live items wrap the physical end.
-	// Tail at this point is [4,5,6,7,8]; the partial PopBackN(3) below
+	// Tail at this point is [4,5,6,7,8]; the partial PopOldestN(3) below
 	// must remove 4,5,6 in oldest-to-newest order. The third item (6)
 	// sits at physical index 0, which is where the modular wrap fires.
 	all := []int{1, 2, 3, 4, 5, 6, 7, 8}
@@ -2470,69 +2471,69 @@ func TestPopBack_PopBackN_Equivalence_Wrapped(t *testing.T) {
 	buf2 := tailbuf.New[int](5).WriteAll(all...)
 	require.Equal(t, []int{4, 5, 6, 7, 8}, buf1.Tail())
 
-	popped1 := buf1.PopBackN(3)
+	popped1 := buf1.PopOldestN(3)
 	popped2 := make([]int, 0, 3)
 	for i := 0; i < 3; i++ {
-		popped2 = append(popped2, buf2.PopBack())
+		popped2 = append(popped2, buf2.PopOldest())
 	}
 
 	require.Equal(t, []int{4, 5, 6}, popped1,
-		"PopBackN must return removed items oldest-to-newest")
+		"PopOldestN must return removed items oldest-to-newest")
 	require.Equal(t, popped1, popped2,
-		"PopBackN(n) and n×PopBack must yield the same result")
+		"PopOldestN(n) and n×PopOldest must yield the same result")
 	require.Equal(t, []int{7, 8}, buf1.Tail(),
 		"surviving tail must be the n-newest items in order")
 	require.Equal(t, 6, buf1.Offset(),
-		"Offset must advance by exactly n (initial 3 from eviction-on-write + 3 from PopBackN)")
+		"Offset must advance by exactly n (initial 3 from eviction-on-write + 3 from PopOldestN)")
 	tailbuf.RequireEqualInternalState(t, buf1, buf2)
 	tailbuf.CheckInvariants(t, buf1)
 }
 
-// TestDropBack_DropBackN_Equivalence_Wrapped is the back-end mirror of
-// TestPopFront_PopFrontN_Equivalence_Wrapped for the discard variant.
-// DropBackN shares the modular-index loop with PopBackN but does not
+// TestDropOldest_DropOldestN_Equivalence_Wrapped is the oldest-end mirror of
+// TestPopNewest_PopNewestN_Equivalence_Wrapped for the discard variant.
+// DropOldestN shares the modular-index loop with PopOldestN but does not
 // build the return slice, so its loop body has a slightly different
-// shape; pin the equivalence with n×DropBack on the same wrapped state
-// where PopBackN's path is exercised above.
-func TestDropBack_DropBackN_Equivalence_Wrapped(t *testing.T) {
+// shape; pin the equivalence with n×DropOldest on the same wrapped state
+// where PopOldestN's path is exercised above.
+func TestDropOldest_DropOldestN_Equivalence_Wrapped(t *testing.T) {
 	all := []int{1, 2, 3, 4, 5, 6, 7, 8}
 	buf1 := tailbuf.New[int](5).WriteAll(all...)
 	buf2 := tailbuf.New[int](5).WriteAll(all...)
 	require.Equal(t, []int{4, 5, 6, 7, 8}, buf1.Tail())
 
-	buf1.DropBackN(3)
+	buf1.DropOldestN(3)
 	for i := 0; i < 3; i++ {
-		buf2.DropBack()
+		buf2.DropOldest()
 	}
 
 	require.Equal(t, []int{7, 8}, buf1.Tail(),
 		"surviving tail must be the n-newest items in order")
 	require.Equal(t, 6, buf1.Offset(),
-		"Offset must advance by exactly n (initial 3 from eviction-on-write + 3 from DropBackN)")
+		"Offset must advance by exactly n (initial 3 from eviction-on-write + 3 from DropOldestN)")
 	tailbuf.RequireEqualInternalState(t, buf1, buf2)
 	tailbuf.CheckInvariants(t, buf1)
 }
 
-// TestPopBackN_PartialDrainOnWrappedBuffer is a direct pin on the
-// partial-drain path of PopBackN against a wrapped buffer, asserting
-// not just the equivalence with n×PopBack (covered above) but also the
+// TestPopOldestN_PartialDrainOnWrappedBuffer is a direct pin on the
+// partial-drain path of PopOldestN against a wrapped buffer, asserting
+// not just the equivalence with n×PopOldest (covered above) but also the
 // post-drain internal layout: oldestIdx wraps forward by exactly n,
 // the n vacated slots are zeroed, and the surviving n-newest items
 // occupy the expected physical positions. A regression in the loop's
 // zero-and-advance step would survive the equivalence test if both
-// PopBackN and PopBack regressed the same way, but would fail here.
-func TestPopBackN_PartialDrainOnWrappedBuffer(t *testing.T) {
+// PopOldestN and PopOldest regressed the same way, but would fail here.
+func TestPopOldestN_PartialDrainOnWrappedBuffer(t *testing.T) {
 	// cap=5, write 8 ⇒ window=[6,7,8,4,5], oldestIdx=3, len=5.
 	buf := tailbuf.New[int](5).WriteAll(1, 2, 3, 4, 5, 6, 7, 8)
 	require.Equal(t, []int{4, 5, 6, 7, 8}, buf.Tail())
 
-	got := buf.PopBackN(3)
+	got := buf.PopOldestN(3)
 	require.Equal(t, []int{4, 5, 6}, got)
 
-	// After popping 3 from the back: oldestIdx should have advanced by 3
+	// After popping 3 from the oldest end: oldestIdx should have advanced by 3
 	// modulo 5, so 3+3=6 mod 5 = 1. The surviving items 7,8 sit at
 	// physical indices 1,2. Offset was already 3 from the eviction-on-
-	// write of items 1,2,3 during the initial WriteAll, so PopBackN(3)
+	// write of items 1,2,3 during the initial WriteAll, so PopOldestN(3)
 	// bumps it to 6.
 	require.Equal(t, []int{7, 8}, buf.Tail())
 	require.Equal(t, 2, buf.Len())
@@ -2660,24 +2661,24 @@ func TestWrite_AtCapAndOverCapBoundary(t *testing.T) {
 	tailbuf.CheckInvariants(t, buf)
 }
 
-// TestWrite_AfterPopBackNDrainsToEmpty pins the interaction between
-// the full-drain PopBackN path (which routes through Clear) and a
+// TestWrite_AfterPopOldestNDrainsToEmpty pins the interaction between
+// the full-drain PopOldestN path (which routes through Clear) and a
 // subsequent Write. The Write must land in a freshly-canonical empty
 // buffer (oldestIdx=0, len=0) and place the item at physical index 0,
 // matching write()'s len==0 branch. A regression that left oldestIdx
-// non-zero after PopBackN's Clear would be caught by the post-drain
+// non-zero after PopOldestN's Clear would be caught by the post-drain
 // CheckInvariants call below (the walker asserts oldestIdx == 0 when
 // len == 0); the post-Write InternalWindow == [item, 0, 0, 0]
 // assertion is the end-to-end pin that the next Write lands at the
 // expected physical slot, independently of any CheckInvariants
 // changes.
-func TestWrite_AfterPopBackNDrainsToEmpty(t *testing.T) {
-	// Drive into a wrapped state first so PopBackN's drain has to
+func TestWrite_AfterPopOldestNDrainsToEmpty(t *testing.T) {
+	// Drive into a wrapped state first so PopOldestN's drain has to
 	// converge from a non-trivial oldestIdx.
 	buf := tailbuf.New[int](4).WriteAll(1, 2, 3, 4, 5, 6)
 	require.Equal(t, []int{3, 4, 5, 6}, buf.Tail())
 
-	got := buf.PopBackN(4) // n == Len ⇒ full drain via Clear path.
+	got := buf.PopOldestN(4) // n == Len ⇒ full drain via Clear path.
 	require.Equal(t, []int{3, 4, 5, 6}, got)
 	require.Equal(t, 0, buf.Len())
 	require.Equal(t, 6, buf.Offset(),
@@ -2691,7 +2692,7 @@ func TestWrite_AfterPopBackNDrainsToEmpty(t *testing.T) {
 	require.Equal(t, []int{7}, buf.Tail())
 	require.Equal(t, 7, buf.Written())
 	require.Equal(t, 6, buf.Offset(),
-		"Write after a back-drain must not perturb Offset")
+		"Write after a oldest-drain must not perturb Offset")
 	require.Equal(t, []int{7, 0, 0, 0}, tailbuf.InternalWindow(buf),
 		"the post-drain Write must land at physical index 0")
 	tailbuf.CheckInvariants(t, buf)
@@ -2706,16 +2707,16 @@ func TestWrite_AfterPopBackNDrainsToEmpty(t *testing.T) {
 	tailbuf.CheckInvariants(t, buf)
 }
 
-// TestWrite_AfterDropBackNDrainsToEmpty mirrors the PopBackN drain
-// test for the discard variant. DropBackN's full-drain branch also
+// TestWrite_AfterDropOldestNDrainsToEmpty mirrors the PopOldestN drain
+// test for the discard variant. DropOldestN's full-drain branch also
 // routes through Clear; pin the same post-drain Write behavior so a
 // regression in either Drop's drain path or Clear's canonicalization
 // is caught.
-func TestWrite_AfterDropBackNDrainsToEmpty(t *testing.T) {
+func TestWrite_AfterDropOldestNDrainsToEmpty(t *testing.T) {
 	buf := tailbuf.New[int](4).WriteAll(1, 2, 3, 4, 5, 6)
 	require.Equal(t, []int{3, 4, 5, 6}, buf.Tail())
 
-	buf.DropBackN(4)
+	buf.DropOldestN(4)
 	require.Equal(t, 0, buf.Len())
 	require.Equal(t, 6, buf.Offset())
 	tailbuf.CheckInvariants(t, buf)
@@ -2786,23 +2787,23 @@ func TestDo_AlreadyCancelledCtx_FnObservesAndAborts(t *testing.T) {
 	tailbuf.CheckInvariants(t, buf)
 }
 
-// TestPopFrontN_PartialDrainOnWrappedBuffer is the front-side mirror
-// of TestPopBackN_PartialDrainOnWrappedBuffer. The existing wrapped
-// equivalence test (TestPopFront_PopFrontN_Equivalence_Wrapped) catches
-// regressions that diverge PopFrontN from n×PopFront, but a co-
+// TestPopNewestN_PartialDrainOnWrappedBuffer is the newest-side mirror
+// of TestPopOldestN_PartialDrainOnWrappedBuffer. The existing wrapped
+// equivalence test (TestPopNewest_PopNewestN_Equivalence_Wrapped) catches
+// regressions that diverge PopNewestN from n×PopNewest, but a co-
 // regression where both methods regress the same way would slip past
 // it; this test pins the literal post-drain physical layout so a co-
 // regression is loud. The partial-drain loop is also exercised in a
 // state where (oldestIdx + base + i) must traverse the physical wrap
 // during the loop body, not just at the equivalence test's structural
 // state-compare boundary.
-func TestPopFrontN_PartialDrainOnWrappedBuffer(t *testing.T) {
+func TestPopNewestN_PartialDrainOnWrappedBuffer(t *testing.T) {
 	// cap=5, write 8 ⇒ window=[6,7,8,4,5], oldestIdx=3, len=5.
 	buf := tailbuf.New[int](5).WriteAll(1, 2, 3, 4, 5, 6, 7, 8)
 	require.Equal(t, []int{4, 5, 6, 7, 8}, buf.Tail())
 
-	got := buf.PopFrontN(3)
-	// PopFrontN returns the n NEWEST items in oldest-to-newest order, so
+	got := buf.PopNewestN(3)
+	// PopNewestN returns the n NEWEST items in oldest-to-newest order, so
 	// the returned slice is [6, 7, 8].
 	require.Equal(t, []int{6, 7, 8}, got)
 
@@ -2810,51 +2811,51 @@ func TestPopFrontN_PartialDrainOnWrappedBuffer(t *testing.T) {
 	//   i=0: idx = (3+2+0) % 5 = 0  → zero window[0] (was 6)
 	//   i=1: idx = (3+2+1) % 5 = 1  → zero window[1] (was 7)
 	//   i=2: idx = (3+2+2) % 5 = 2  → zero window[2] (was 8)
-	// oldestIdx and offset are unchanged (PopFrontN shrinks from the
-	// front and does NOT advance Offset, same as PopFront).
+	// oldestIdx and offset are unchanged (PopNewestN shrinks from the
+	// newest end and does NOT advance Offset, same as PopNewest).
 	require.Equal(t, []int{4, 5}, buf.Tail())
 	require.Equal(t, 2, buf.Len())
 	require.Equal(t, 3, buf.Offset(),
-		"PopFrontN must NOT advance Offset (front-side shrink)")
+		"PopNewestN must NOT advance Offset (newest-side shrink)")
 	require.Equal(t, 8, buf.Written())
 	require.Equal(t, []int{0, 0, 0, 4, 5}, tailbuf.InternalWindow(buf),
 		"the three vacated slots (newest end of the live region) must be zeroed")
 	tailbuf.CheckInvariants(t, buf)
 }
 
-// TestDropFrontN_PartialDrainOnWrappedBuffer is the discard variant.
-// DropFrontN's partial-drain loop is shape-identical to PopFrontN's
-// minus the return-slice allocation; the existing "DropFrontN partial
-// drain matches PopFrontN" subtest only exercises n=1, which makes
+// TestDropNewestN_PartialDrainOnWrappedBuffer is the discard variant.
+// DropNewestN's partial-drain loop is shape-identical to PopNewestN's
+// minus the return-slice allocation; the existing "DropNewestN partial
+// drain matches PopNewestN" subtest only exercises n=1, which makes
 // the loop's modular reduction trivial (the loop body runs once with
 // i=0 and idx = oldestIdx+base). This test exercises the multi-step
 // reduction across the physical wrap.
-func TestDropFrontN_PartialDrainOnWrappedBuffer(t *testing.T) {
+func TestDropNewestN_PartialDrainOnWrappedBuffer(t *testing.T) {
 	buf := tailbuf.New[int](5).WriteAll(1, 2, 3, 4, 5, 6, 7, 8)
 	require.Equal(t, []int{4, 5, 6, 7, 8}, buf.Tail())
 
-	buf.DropFrontN(3)
+	buf.DropNewestN(3)
 
 	require.Equal(t, []int{4, 5}, buf.Tail())
 	require.Equal(t, 2, buf.Len())
 	require.Equal(t, 3, buf.Offset(),
-		"DropFrontN must NOT advance Offset (front-side shrink)")
+		"DropNewestN must NOT advance Offset (newest-side shrink)")
 	require.Equal(t, 8, buf.Written())
 	require.Equal(t, []int{0, 0, 0, 4, 5}, tailbuf.InternalWindow(buf),
 		"the three vacated slots (newest end of the live region) must be zeroed")
 	tailbuf.CheckInvariants(t, buf)
 }
 
-// TestWrite_AfterPopFrontNDrainsToEmpty is the front-side mirror of
-// TestWrite_AfterPopBackNDrainsToEmpty. The full-drain branch in
-// PopFrontN (the "n >= b.len" branch) takes a DIFFERENT code path
-// from the back-side: it sets oldestIdx = 0 inline rather than
-// routing through Clear (because front-pops must not bump Offset).
+// TestWrite_AfterPopNewestNDrainsToEmpty is the newest-side mirror of
+// TestWrite_AfterPopOldestNDrainsToEmpty. The full-drain branch in
+// PopNewestN (the "n >= b.len" branch) takes a DIFFERENT code path
+// from the oldest-side: it sets oldestIdx = 0 inline rather than
+// routing through Clear (because newest-pops must not bump Offset).
 // A regression that omitted the inline oldestIdx = 0 pin would
 // leave a stale cursor, the post-drain CheckInvariants would catch
 // it directly, and the post-Write InternalWindow assertion is the
 // end-to-end pin that the next Write lands at physical index 0.
-func TestWrite_AfterPopFrontNDrainsToEmpty(t *testing.T) {
+func TestWrite_AfterPopNewestNDrainsToEmpty(t *testing.T) {
 	// Drive into a wrapped state first so the drain has to converge
 	// from a non-trivial oldestIdx.
 	buf := tailbuf.New[int](4).WriteAll(1, 2, 3, 4, 5, 6)
@@ -2862,52 +2863,52 @@ func TestWrite_AfterPopFrontNDrainsToEmpty(t *testing.T) {
 	require.Equal(t, 2, buf.Offset(),
 		"precondition: initial eviction-on-write has bumped Offset to 2")
 
-	got := buf.PopFrontN(4) // n == Len ⇒ full drain via inline branch.
+	got := buf.PopNewestN(4) // n == Len ⇒ full drain via inline branch.
 	require.Equal(t, []int{3, 4, 5, 6}, got)
 	require.Equal(t, 0, buf.Len())
 	require.Equal(t, 2, buf.Offset(),
-		"full PopFrontN drain must NOT bump Offset (front-side shrink)")
+		"full PopNewestN drain must NOT bump Offset (newest-side shrink)")
 	require.Equal(t, 6, buf.Written())
 	tailbuf.CheckInvariants(t, buf)
 
 	// The next Write must place at physical index 0 (oldestIdx pinned
-	// by PopFrontN's full-drain branch) and leave the buffer in
-	// canonical post-write state. Offset stays at 2 because front-pops
-	// do not advance it — distinct from the back-side mirror test
+	// by PopNewestN's full-drain branch) and leave the buffer in
+	// canonical post-write state. Offset stays at 2 because newest-pops
+	// do not advance it — distinct from the oldest-side mirror test
 	// where Clear bumps Offset by the live count.
 	buf.Write(7)
 	require.Equal(t, 1, buf.Len())
 	require.Equal(t, []int{7}, buf.Tail())
 	require.Equal(t, 7, buf.Written())
 	require.Equal(t, 2, buf.Offset(),
-		"Write after a front-drain must not perturb Offset")
+		"Write after a newest-drain must not perturb Offset")
 	require.Equal(t, []int{7, 0, 0, 0}, tailbuf.InternalWindow(buf),
 		"the post-drain Write must land at physical index 0")
 	tailbuf.CheckInvariants(t, buf)
 }
 
-// TestWrite_AfterDropFrontNDrainsToEmpty mirrors the PopFrontN drain
-// test for the discard variant. DropFrontN's full-drain branch (the
+// TestWrite_AfterDropNewestNDrainsToEmpty mirrors the PopNewestN drain
+// test for the discard variant. DropNewestN's full-drain branch (the
 // "n >= b.len" branch) takes the same inline-set-oldestIdx-to-0
-// path as PopFrontN; pin the same post-drain Write behavior so a
-// regression in either Drop's drain path or the front-side
+// path as PopNewestN; pin the same post-drain Write behavior so a
+// regression in either Drop's drain path or the newest-side
 // canonicalization (which deliberately does NOT route through
 // Clear) is caught.
-func TestWrite_AfterDropFrontNDrainsToEmpty(t *testing.T) {
+func TestWrite_AfterDropNewestNDrainsToEmpty(t *testing.T) {
 	buf := tailbuf.New[int](4).WriteAll(1, 2, 3, 4, 5, 6)
 	require.Equal(t, []int{3, 4, 5, 6}, buf.Tail())
 	require.Equal(t, 2, buf.Offset())
 
-	buf.DropFrontN(4)
+	buf.DropNewestN(4)
 	require.Equal(t, 0, buf.Len())
 	require.Equal(t, 2, buf.Offset(),
-		"full DropFrontN drain must NOT bump Offset (front-side shrink)")
+		"full DropNewestN drain must NOT bump Offset (newest-side shrink)")
 	tailbuf.CheckInvariants(t, buf)
 
 	buf.Write(7)
 	require.Equal(t, []int{7}, buf.Tail())
 	require.Equal(t, 2, buf.Offset(),
-		"Write after a front-drain must not perturb Offset")
+		"Write after a newest-drain must not perturb Offset")
 	require.Equal(t, []int{7, 0, 0, 0}, tailbuf.InternalWindow(buf))
 	tailbuf.CheckInvariants(t, buf)
 }

@@ -70,29 +70,22 @@ section of the godoc for how this differs from `Buf.Peek` (which panics on
 out-of-range) and for the deliberate asymmetry around negative start
 values between `SliceTail` and `SliceNominal`.
 
-> [!NOTE]
-> **`Front` is the newest end; `Back` is the oldest end.** This is the
-> reverse of the queue/deque convention many readers will assume:
-> `PopFront` removes the most recently written item, while `PopBack`
-> removes the oldest. The example below relies on this — `PopBackN(2)`
-> on `[a b c]` returns `[a b]`, the two oldest.
-
 There are various functions for popping, dropping, or peeking into the tail
-buffer. `PopFront`/`PopFrontN` and `PopBack`/`PopBackN` remove and return
-items from the newest and oldest ends respectively; the corresponding
-`DropFront`/`DropFrontN`/`DropBack`/`DropBackN` family does the same but
-discards the result instead of returning it (saving a value copy in the
+buffer. `PopNewest`/`PopNewestN` and `PopOldest`/`PopOldestN` remove and
+return items from the newest and oldest ends respectively; the corresponding
+`DropNewest`/`DropNewestN`/`DropOldest`/`DropOldestN` family does the same
+but discards the result instead of returning it (saving a value copy in the
 singular variants and a slice allocation in the N variants).
 
 ```go
   buf := tailbuf.New[string](3)
 
   buf.WriteAll("a", "b", "c")
-  fmt.Println(buf.Peek(0))      // a
-  fmt.Println(buf.Peek(1))      // b
+  fmt.Println(buf.Peek(0))         // a
+  fmt.Println(buf.Peek(1))         // b
 
-  fmt.Println(buf.PopBackN(2))  // [a b]  (the two oldest)
-  fmt.Println(buf.Tail())       // [c]
+  fmt.Println(buf.PopOldestN(2))   // [a b]
+  fmt.Println(buf.Tail())          // [c]
 ```
 
 There are also basic methods for interacting with the buffer:
@@ -120,7 +113,7 @@ There are also basic methods for interacting with the buffer:
   buf.Clear()                              // Clear is like Reset, but doesn't reset "written" count
   fmt.Println(buf.Len())                   // 0
   fmt.Println("Written:", buf.Written())   // 2
-  fmt.Println("Offset:", buf.Offset())     // 2  (Clear conceptually evicts off the back, so Offset advances by the prior Len)
+  fmt.Println("Offset:", buf.Offset())     // 2  (Clear conceptually evicts off the oldest end, so Offset advances by the prior Len)
 ```
 
 
@@ -139,7 +132,7 @@ reports whether a given nominal index is still alive.
   fmt.Println(start, end)              // 2 5
   fmt.Println(buf.InBounds(1))         // false (evicted)
   fmt.Println(buf.InBounds(3))         // true  ("d")
-  fmt.Println(buf.Offset())            // 2 (items evicted from the back)
+  fmt.Println(buf.Offset())            // 2 (items evicted from the oldest end)
 ```
 
 And then there's the [`Apply`](https://pkg.go.dev/github.com/neilotoole/tailbuf#Buf.Apply) method, which applies a func to each element in the buffer,

@@ -37,8 +37,8 @@ func TailNewSlice[T any](b *Buf[T]) []T {
 //   - offset >= 0 and written >= 0
 //   - offset + len <= written
 //
-// The "equality holds iff none of PopFront / PopFrontN / DropFront /
-// DropFrontN has removed an item since construction or the most recent
+// The "equality holds iff none of PopNewest / PopNewestN / DropNewest /
+// DropNewestN has removed an item since construction or the most recent
 // Reset" rider from the package doc is not asserted here — that fact
 // depends on call history that CheckInvariants cannot observe from local
 // state alone.

@@ -190,66 +190,66 @@ func BenchmarkApply_vs_TailLoop(b *testing.B) {
 	})
 }
 
-// BenchmarkPopFront_Refill measures [Buf.PopFront] in a steady-state
-// "pop-then-refill" loop. The per-op cost is one PopFront + one Write,
-// where the Write lands on a not-yet-full buffer (PopFront just shrank
+// BenchmarkPopNewest_Refill measures [Buf.PopNewest] in a steady-state
+// "pop-then-refill" loop. The per-op cost is one PopNewest + one Write,
+// where the Write lands on a not-yet-full buffer (PopNewest just shrank
 // len), so this measures Pop + Write-without-eviction, not Pop +
 // Write-with-eviction. Halve the reported ns/op only for a rough
 // per-primitive estimate; the two halves are not interchangeable with
 // the steady-state-evicting Write measured by BenchmarkWrite.
-func BenchmarkPopFront_Refill(b *testing.B) {
+func BenchmarkPopNewest_Refill(b *testing.B) {
 	buf := tailbuf.New[int](1024).WriteAll(make([]int, 1024)...)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		sinkInt = buf.PopFront()
+		sinkInt = buf.PopNewest()
 		buf.Write(i)
 	}
 }
 
-// BenchmarkPopBack_Refill mirrors BenchmarkPopFront_Refill for the back
+// BenchmarkPopOldest_Refill mirrors BenchmarkPopNewest_Refill for the oldest
 // end so the two sides can be compared directly. Same composite-op
 // caveat applies: this measures Pop + Write-without-eviction.
-func BenchmarkPopBack_Refill(b *testing.B) {
+func BenchmarkPopOldest_Refill(b *testing.B) {
 	buf := tailbuf.New[int](1024).WriteAll(make([]int, 1024)...)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		sinkInt = buf.PopBack()
+		sinkInt = buf.PopOldest()
 		buf.Write(i)
 	}
 }
 
-// BenchmarkDropFront_Refill mirrors BenchmarkPopFront_Refill for the
-// no-value-copy discard variant. The whole point of DropFront is to
+// BenchmarkDropNewest_Refill mirrors BenchmarkPopNewest_Refill for the
+// no-value-copy discard variant. The whole point of DropNewest is to
 // avoid the value-copy cost of returning the item; the time delta vs
-// BenchmarkPopFront_Refill is what surfaces that saving. The
+// BenchmarkPopNewest_Refill is what surfaces that saving. The
 // [b.ReportAllocs] gate additionally pins the 0-alloc contract under
-// steady-state refill — PopFront is also alloc-free for non-pointer T,
+// steady-state refill — PopNewest is also alloc-free for non-pointer T,
 // so the alloc count is a regression guard rather than the
 // differentiator.
-func BenchmarkDropFront_Refill(b *testing.B) {
+func BenchmarkDropNewest_Refill(b *testing.B) {
 	buf := tailbuf.New[int](1024).WriteAll(make([]int, 1024)...)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		buf.DropFront()
+		buf.DropNewest()
 		buf.Write(i)
 	}
 }
 
-// BenchmarkDropFrontN_Refill measures the bulk discard. The PopFrontN
+// BenchmarkDropNewestN_Refill measures the bulk discard. The PopNewestN
 // counterpart would allocate a fresh []T on every call to return the
-// discarded items; DropFrontN avoids that allocation entirely. Pinning
+// discarded items; DropNewestN avoids that allocation entirely. Pinning
 // the 0-alloc contract with [b.ReportAllocs] is the contract that
-// distinguishes DropFrontN from PopFrontN at the type level.
-func BenchmarkDropFrontN_Refill(b *testing.B) {
+// distinguishes DropNewestN from PopNewestN at the type level.
+func BenchmarkDropNewestN_Refill(b *testing.B) {
 	batch := make([]int, 16)
 	buf := tailbuf.New[int](1024).WriteAll(make([]int, 1024)...)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		buf.DropFrontN(16)
+		buf.DropNewestN(16)
 		buf.WriteAll(batch...)
 	}
 }

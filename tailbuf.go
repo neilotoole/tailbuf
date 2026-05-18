@@ -1,7 +1,7 @@
 // Package tailbuf provides a fixed-size, generic [Buf] that retains the most
 // recent items written to it. The package is intentionally small: callers
 // construct a [Buf] with [New], append with [Buf.Write] / [Buf.WriteAll],
-// inspect with [Buf.Tail] / [Buf.Peek] / [Buf.Front] / [Buf.Back], and
+// inspect with [Buf.Tail] / [Buf.Peek] / [Buf.Newest] / [Buf.Oldest], and
 // optionally remove items from either end with the Pop and Drop families.
 //
 // # Quick start
@@ -31,25 +31,25 @@
 //	Cap()          == fixed at construction
 //	Len()          <= Cap()
 //	Offset()       <= Written()
-//	Offset()+Len() <= Written()  (equality iff none of PopFront /
-//	                               PopFrontN / DropFront / DropFrontN has
+//	Offset()+Len() <= Written()  (equality iff none of PopNewest /
+//	                               PopNewestN / DropNewest / DropNewestN has
 //	                               removed an item since construction or
 //	                               the most recent Reset)
 //
 // # Pop semantics
 //
-// [Buf.PopBack] / [Buf.DropBack] / [Buf.PopBackN] / [Buf.DropBackN] all
+// [Buf.PopOldest] / [Buf.DropOldest] / [Buf.PopOldestN] / [Buf.DropOldestN] all
 // remove the oldest live item(s). They advance [Buf.Offset] by the number
 // removed, exactly as eviction-on-write would.
 //
-// [Buf.PopFront] / [Buf.PopFrontN] / [Buf.DropFront] / [Buf.DropFrontN]
+// [Buf.PopNewest] / [Buf.PopNewestN] / [Buf.DropNewest] / [Buf.DropNewestN]
 // remove the newest live item(s). They do NOT advance [Buf.Offset]; the
 // tail window simply shrinks from its newest end.
 //
 // One subtle consequence: after any of those calls, the next [Buf.Write]
 // occupies the nominal index that the popped/dropped item had. The buffer
 // does not preserve "holes" in nominal-index space; the live items always
-// occupy a contiguous nominal range. Mixing the front-end remove variants
+// occupy a contiguous nominal range. Mixing the newest-end remove variants
 // with writes is supported, but if your code relies on a one-to-one
 // mapping between writes and nominal indices, do not call any of them.
 //
@@ -106,7 +106,7 @@
 // Read access:
 //
 //	Tail                  — alias-or-allocate (see "Slice aliasing" above)
-//	Front, Back, Peek     — single-item reads (Peek panics on out-of-range)
+//	Newest, Oldest, Peek     — single-item reads (Peek panics on out-of-range)
 //	SliceTail, SliceNominal — always allocate; clip silently on out-of-range
 //
 // Mutation (append):
@@ -119,10 +119,10 @@
 //
 // Mutation (selective remove):
 //
-//	PopFront,  PopFrontN  — remove from the newest end (no Offset change)
-//	PopBack,   PopBackN   — remove from the oldest end (Offset advances)
-//	DropFront, DropFrontN — like PopFront/PopFrontN but discard the result
-//	DropBack,  DropBackN  — like PopBack/PopBackN but discard the result
+//	PopNewest,  PopNewestN  — remove from the newest end (no Offset change)
+//	PopOldest,   PopOldestN   — remove from the oldest end (Offset advances)
+//	DropNewest, DropNewestN — like PopNewest/PopNewestN but discard the result
+//	DropOldest,  DropOldestN  — like PopOldest/PopOldestN but discard the result
 //
 // Mutation (bulk empty):
 //
@@ -193,14 +193,14 @@ import "context"
 //   - offset never decreases except across [Buf.Reset]; it advances on
 //     eviction-on-write (including the implicit eviction on every
 //     [Buf.Write] / [Buf.WriteAll] against a zero-capacity buffer), on
-//     [Buf.PopBack] / [Buf.PopBackN] / [Buf.DropBack] / [Buf.DropBackN], and
-//     on [Buf.Clear]. [Buf.PopFront] / [Buf.PopFrontN] / [Buf.DropFront] /
-//     [Buf.DropFrontN] do NOT change offset.
+//     [Buf.PopOldest] / [Buf.PopOldestN] / [Buf.DropOldest] / [Buf.DropOldestN], and
+//     on [Buf.Clear]. [Buf.PopNewest] / [Buf.PopNewestN] / [Buf.DropNewest] /
+//     [Buf.DropNewestN] do NOT change offset.
 //   - written never decreases except across [Buf.Reset]; it is bumped only
 //     by [Buf.Write] and [Buf.WriteAll] (including writes silently dropped
 //     by a zero-capacity Buf).
-//   - offset + len <= written, with equality iff none of [Buf.PopFront] /
-//     [Buf.PopFrontN] / [Buf.DropFront] / [Buf.DropFrontN] has removed an
+//   - offset + len <= written, with equality iff none of [Buf.PopNewest] /
+//     [Buf.PopNewestN] / [Buf.DropNewest] / [Buf.DropNewestN] has removed an
 //     item since construction or the most recent [Buf.Reset].
 type Buf[T any] struct {
 	// window is the underlying circular storage. Its length is the buffer's
@@ -217,12 +217,11 @@ type Buf[T any] struct {
 	// compare equal regardless of history; callers must not rely on
 	// this — future implementations may relax the canonicalization.
 	//
-	// Name choice: this is "the back of the tail" in the package's
-	// vocabulary, so [Buf.Back] returns window[oldestIdx]. Naming the
-	// field oldestIdx (rather than back) avoids a maintainer-trap where
-	// "back the cursor" is read as "the newest end" — common ring-buffer
-	// literature uses head/tail to mean read/write ends in the opposite
-	// orientation, so the explicit name removes that confusion.
+	// Name choice: this is "the oldest end of the tail" in the package's
+	// vocabulary, so [Buf.Oldest] returns window[oldestIdx]. Common
+	// ring-buffer literature uses head/tail to mean read/write ends in
+	// the opposite orientation, so the explicit "oldestIdx" name removes
+	// any confusion about which end of the ring this cursor anchors.
 	//
 	// There is no parallel "newestIdx" field: the newest live item sits at
 	// (oldestIdx + len - 1) mod len(window) and is derived on demand. A
@@ -235,10 +234,10 @@ type Buf[T any] struct {
 	len int
 
 	// offset is the nominal index of the oldest live item, equivalently the
-	// count of items removed from the back of the tail by any of:
+	// count of items removed from the oldest end of the tail by any of:
 	// eviction-on-write, a Write/WriteAll against a zero-capacity buffer (a
-	// conceptual eviction-on-write), PopBack, DropBack, PopBackN, DropBackN,
-	// or Clear. PopFront, PopFrontN, DropFront, and DropFrontN do NOT change
+	// conceptual eviction-on-write), PopOldest, DropOldest, PopOldestN, DropOldestN,
+	// or Clear. PopNewest, PopNewestN, DropNewest, and DropNewestN do NOT change
 	// offset.
 	//
 	// offset is tracked explicitly rather than derived from written-cap; a
@@ -279,7 +278,7 @@ func (b *Buf[T]) Write(item T) *Buf[T] {
 		// Capacity 0: every write is conceptually an eviction-on-write
 		// (no room, so the item leaves the tail immediately). Advancing
 		// both written and offset keeps the invariant
-		// Offset()+Len() == Written() holding when no PopFront has run;
+		// Offset()+Len() == Written() holding when no PopNewest has run;
 		// without this, a cap=0 buffer would silently break that
 		// equality after the first Write.
 		b.written++
@@ -322,10 +321,10 @@ func (b *Buf[T]) WriteAll(items ...T) *Buf[T] {
 //   - full:    overwrite the slot at oldestIdx, then advance oldestIdx and
 //     offset. The just-written slot is now the newest live item;
 //     oldestIdx has moved on to what used to be the second-oldest.
-//   - partial: place just past the current front; bump len.
+//   - partial: place just past the current newest position; bump len.
 //
 // The eviction predicate is `b.len == cap`. A predicate over written (e.g.
-// `b.written > cap`) would diverge from len after any front- or back-side
+// `b.written > cap`) would diverge from len after any newest- or oldest-side
 // Pop or Drop, since those shrink len but leave written unchanged.
 func (b *Buf[T]) write(item T) {
 	b.written++
@@ -349,7 +348,7 @@ func (b *Buf[T]) write(item T) {
 		b.oldestIdx = (b.oldestIdx + 1) % winLen
 		b.offset++
 	default:
-		// Room remaining; place item just past the current front.
+		// Room remaining; place item just past the current newest position.
 		b.window[(b.oldestIdx+b.len)%winLen] = item
 		b.len++
 	}
@@ -375,11 +374,11 @@ func (b *Buf[T]) Len() int {
 // [Buf.WriteAll]. It includes items that were evicted, popped, dropped, or
 // silently discarded by a zero-capacity buffer.
 //
-// Written is independent of [Buf.Offset] and [Buf.Len]: after any front-end
-// remove ([Buf.PopFront], [Buf.PopFrontN], [Buf.DropFront], [Buf.DropFrontN]),
+// Written is independent of [Buf.Offset] and [Buf.Len]: after any newest-end
+// remove ([Buf.PopNewest], [Buf.PopNewestN], [Buf.DropNewest], [Buf.DropNewestN]),
 // Written is unchanged but the upper end of [Buf.Bounds] shrinks. To recover
 // the count of items currently retained, use [Buf.Len]. To recover the count
-// of items removed from the back of the tail, use [Buf.Offset].
+// of items removed from the oldest end of the tail, use [Buf.Offset].
 //
 // Written is reset only by [Buf.Reset]; [Buf.Clear] preserves it.
 func (b *Buf[T]) Written() int {
@@ -393,12 +392,12 @@ func (b *Buf[T]) Written() int {
 //
 // Offset is 0 for a freshly-constructed buffer but may be non-zero on an
 // empty buffer after any of: eviction-on-write (including any [Buf.Write]
-// or [Buf.WriteAll] on a zero-capacity buffer), [Buf.PopBack] /
-// [Buf.DropBack] / [Buf.PopBackN] / [Buf.DropBackN], or [Buf.Clear].
+// or [Buf.WriteAll] on a zero-capacity buffer), [Buf.PopOldest] /
+// [Buf.DropOldest] / [Buf.PopOldestN] / [Buf.DropOldestN], or [Buf.Clear].
 //
-// Equivalently, Offset is the number of items that have left the back of
-// the tail by any of those routes. [Buf.PopFront], [Buf.PopFrontN],
-// [Buf.DropFront], and [Buf.DropFrontN] do NOT advance Offset.
+// Equivalently, Offset is the number of items that have left the oldest end
+// the tail by any of those routes. [Buf.PopNewest], [Buf.PopNewestN],
+// [Buf.DropNewest], and [Buf.DropNewestN] do NOT advance Offset.
 func (b *Buf[T]) Offset() int {
 	return b.offset
 }
@@ -416,8 +415,8 @@ func (b *Buf[T]) Offset() int {
 //	}
 //
 // Bounds derives end from offset + len, NOT from written. After any
-// front-end remove ([Buf.PopFront], [Buf.PopFrontN], [Buf.DropFront],
-// [Buf.DropFrontN]) — which shrinks len without changing written — or after
+// newest-end remove ([Buf.PopNewest], [Buf.PopNewestN], [Buf.DropNewest],
+// [Buf.DropNewestN]) — which shrinks len without changing written — or after
 // a [Buf.Clear] (len resets to 0 but written is preserved), using written
 // here would over-report the live range.
 func (b *Buf[T]) Bounds() (start, end int) {
@@ -438,9 +437,9 @@ func (b *Buf[T]) Bounds() (start, end int) {
 //
 // InBounds returns false when the buffer is empty, when nominalIndex is
 // negative, when it is below the current [Buf.Offset] (the item has been
-// evicted or popped from the back), and when it is at or beyond
+// evicted or popped from the oldest end), and when it is at or beyond
 // [Buf.Offset] + [Buf.Len] (the item was never live, or was popped from
-// the front).
+// the newest end).
 func (b *Buf[T]) InBounds(nominalIndex int) bool {
 	if b.len == 0 || nominalIndex < 0 {
 		return false
@@ -448,15 +447,15 @@ func (b *Buf[T]) InBounds(nominalIndex int) bool {
 	return nominalIndex >= b.offset && nominalIndex < b.offset+b.len
 }
 
-// Front returns the newest live item, or the zero value of T when the tail
-// is empty. Front does not modify the buffer; see [Buf.PopFront] for the
+// Newest returns the newest live item, or the zero value of T when the tail
+// is empty. Newest does not modify the buffer; see [Buf.PopNewest] for the
 // removing variant.
 //
 // Empty-check uses [Buf.Len] rather than any sentinel value on the
-// oldest-item cursor. This makes a zero-value Buf safe to call Front on:
+// oldest-item cursor. This makes a zero-value Buf safe to call Newest on:
 // len defaults to 0 there, the empty branch fires, and the nil internal
 // window is never indexed.
-func (b *Buf[T]) Front() T {
+func (b *Buf[T]) Newest() T {
 	if b.len == 0 {
 		var zero T
 		return zero
@@ -464,14 +463,14 @@ func (b *Buf[T]) Front() T {
 	return b.window[(b.oldestIdx+b.len-1)%len(b.window)]
 }
 
-// Back returns the oldest live item, or the zero value of T when the tail is
-// empty. Back does not modify the buffer; see [Buf.PopBack] for the removing
+// Oldest returns the oldest live item, or the zero value of T when the tail is
+// empty. Oldest does not modify the buffer; see [Buf.PopOldest] for the removing
 // variant.
 //
-// Same zero-value-safety reasoning as [Buf.Front]: empty-check uses
+// Same zero-value-safety reasoning as [Buf.Newest]: empty-check uses
 // [Buf.Len] so a zero-value Buf (with a nil internal window) is never
 // indexed.
-func (b *Buf[T]) Back() T {
+func (b *Buf[T]) Oldest() T {
 	if b.len == 0 {
 		var zero T
 		return zero
@@ -480,8 +479,8 @@ func (b *Buf[T]) Back() T {
 }
 
 // Peek returns the item at the given tail-relative index, counting from
-// the oldest live item: tailIndex 0 is [Buf.Back], tailIndex Len-1 is
-// [Buf.Front]. The argument is in tail-relative space, NOT the
+// the oldest live item: tailIndex 0 is [Buf.Oldest], tailIndex Len-1 is
+// [Buf.Newest]. The argument is in tail-relative space, NOT the
 // nominal-index space used by [Buf.InBounds] / [Buf.Bounds] / [Buf.Offset].
 // Panics on an out-of-range tail index (negative, or >= Len) or on an
 // empty tail.
@@ -545,15 +544,15 @@ func (b *Buf[T]) Tail() []T {
 		return []T{}
 	}
 	winLen := len(b.window)
-	front := (b.oldestIdx + b.len - 1) % winLen
-	if b.oldestIdx <= front {
-		// No wrap: live items occupy window[oldestIdx .. front+1]. Returning
+	newest := (b.oldestIdx + b.len - 1) % winLen
+	if b.oldestIdx <= newest {
+		// No wrap: live items occupy window[oldestIdx .. newest+1]. Returning
 		// a sub-slice of the underlying storage with a 3-index full-slice
 		// expression pins cap == len, so append allocates fresh rather
-		// than clobbering window[front+1] and beyond.
-		return b.window[b.oldestIdx : front+1 : front+1]
+		// than clobbering window[newest+1] and beyond.
+		return b.window[b.oldestIdx : newest+1 : newest+1]
 	}
-	// Wrapped: live items span window[oldestIdx:cap] + window[0:front+1].
+	// Wrapped: live items span window[oldestIdx:cap] + window[0:newest+1].
 	// We must allocate a fresh slice to present them contiguously.
 	return b.tailNewSlice()
 }
@@ -575,9 +574,9 @@ func (b *Buf[T]) tailNewSlice() []T {
 
 // zeroTail zeroes the storage slots holding live items, so that callers
 // don't keep stale references to garbage-collectable values past their
-// useful life. Called directly by [Buf.Reset], [Buf.Clear], [Buf.PopFrontN],
-// and [Buf.DropFrontN] when those helpers are emptying (rather than
-// partially shrinking) the tail; [Buf.PopBackN] and [Buf.DropBackN] reach
+// useful life. Called directly by [Buf.Reset], [Buf.Clear], [Buf.PopNewestN],
+// and [Buf.DropNewestN] when those helpers are emptying (rather than
+// partially shrinking) the tail; [Buf.PopOldestN] and [Buf.DropOldestN] reach
 // it indirectly through [Buf.Clear].
 func (b *Buf[T]) zeroTail() {
 	if b.len == 0 {
@@ -609,7 +608,7 @@ func (b *Buf[T]) Reset() *Buf[T] {
 }
 
 // Clear empties the tail window without resetting [Buf.Written]. The cleared
-// items are conceptually evicted off the back, so [Buf.Offset] advances by
+// items are conceptually evicted off the oldest end, so [Buf.Offset] advances by
 // the previous [Buf.Len]; this keeps [Buf.Bounds] consistent (the empty
 // range starts at the position of the next write). Returns b for chaining.
 //
@@ -626,18 +625,18 @@ func (b *Buf[T]) Clear() *Buf[T] {
 	return b
 }
 
-// PopFront removes and returns the newest live item. Returns the zero value
+// PopNewest removes and returns the newest live item. Returns the zero value
 // of T when the tail is empty.
 //
-// PopFront does NOT change [Buf.Offset]; the tail window simply shrinks from
+// PopNewest does NOT change [Buf.Offset]; the tail window simply shrinks from
 // its newest end. Note in particular that the next [Buf.Write] will reuse
 // the nominal index that the popped item had (see the package documentation
 // for the consequences).
 //
-// See also: [Buf.PopFrontN] for the bulk variant; [Buf.DropFront] when the
-// returned value is not needed; [Buf.Front] for a non-removing peek at the
+// See also: [Buf.PopNewestN] for the bulk variant; [Buf.DropNewest] when the
+// returned value is not needed; [Buf.Newest] for a non-removing peek at the
 // same item.
-func (b *Buf[T]) PopFront() T {
+func (b *Buf[T]) PopNewest() T {
 	if b.len == 0 {
 		var zero T
 		return zero
@@ -658,29 +657,29 @@ func (b *Buf[T]) PopFront() T {
 	return item
 }
 
-// PopFrontN removes and returns up to n newest items. The returned slice has
+// PopNewestN removes and returns up to n newest items. The returned slice has
 // the items in oldest-to-newest order — that is, the LAST element of the
-// returned slice is the one that was previously the front, and the FIRST
-// element is the one that was n positions back from the front.
+// returned slice is the one that was previously the newest, and the FIRST
+// element is the one that was n-1 positions older than the newest.
 //
 // n <= 0 returns an empty slice; n >= [Buf.Len] empties the tail and returns
 // all items. The returned slice is freshly allocated.
 //
-// PopFrontN does NOT change [Buf.Offset]; same caveat as [Buf.PopFront].
+// PopNewestN does NOT change [Buf.Offset]; same caveat as [Buf.PopNewest].
 //
-// See also: [Buf.PopFront] for the single-item variant; [Buf.DropFrontN]
+// See also: [Buf.PopNewest] for the single-item variant; [Buf.DropNewestN]
 // when the returned values are not needed.
-func (b *Buf[T]) PopFrontN(n int) []T {
+func (b *Buf[T]) PopNewestN(n int) []T {
 	if b.len == 0 || n < 1 {
 		return []T{}
 	}
 	if n >= b.len {
 		s := b.tailNewSlice()
 		b.zeroTail()
-		// We deliberately do NOT bump b.offset (PopFront semantics shrink
-		// from the front). We also don't call Clear, which would. Pin
+		// We deliberately do NOT bump b.offset (PopNewest semantics shrink
+		// from the newest end). We also don't call Clear, which would. Pin
 		// oldestIdx to 0 explicitly to match the canonical-empty invariant
-		// (see PopFront).
+		// (see PopNewest).
 		b.oldestIdx = 0
 		b.len = 0
 		return s
@@ -701,12 +700,12 @@ func (b *Buf[T]) PopFrontN(n int) []T {
 	return s
 }
 
-// PopBack removes and returns the oldest live item, advancing [Buf.Offset]
+// PopOldest removes and returns the oldest live item, advancing [Buf.Offset]
 // by one. Returns the zero value of T when the tail is empty.
 //
-// See also: [Buf.PopBackN] for the bulk variant; [Buf.DropBack] when the
-// returned value is not needed; [Buf.Back] for a non-removing peek.
-func (b *Buf[T]) PopBack() T {
+// See also: [Buf.PopOldestN] for the bulk variant; [Buf.DropOldest] when the
+// returned value is not needed; [Buf.Oldest] for a non-removing peek.
+func (b *Buf[T]) PopOldest() T {
 	if b.len == 0 {
 		var zero T
 		return zero
@@ -718,29 +717,29 @@ func (b *Buf[T]) PopBack() T {
 	b.len--
 	b.offset++
 	if b.len == 0 {
-		// See PopFront for the rationale; same canonical-empty pin.
+		// See PopNewest for the rationale; same canonical-empty pin.
 		b.oldestIdx = 0
 	}
 	return item
 }
 
-// PopBackN removes and returns up to n oldest items in oldest-to-newest
+// PopOldestN removes and returns up to n oldest items in oldest-to-newest
 // order, advancing [Buf.Offset] by the number actually removed. n <= 0
 // returns an empty slice; n >= [Buf.Len] empties the tail and returns all
 // items.
 //
 // The returned slice is freshly allocated.
 //
-// See also: [Buf.PopBack] for the single-item variant; [Buf.DropBackN]
+// See also: [Buf.PopOldest] for the single-item variant; [Buf.DropOldestN]
 // when the returned values are not needed.
-func (b *Buf[T]) PopBackN(n int) []T {
+func (b *Buf[T]) PopOldestN(n int) []T {
 	if b.len == 0 || n < 1 {
 		return []T{}
 	}
 	if n >= b.len {
 		s := b.tailNewSlice()
 		// Clear bumps offset by the live count, which matches the semantics
-		// of popping every item from the back.
+		// of popping every item from the oldest end.
 		b.Clear()
 		return s
 	}
@@ -758,17 +757,17 @@ func (b *Buf[T]) PopBackN(n int) []T {
 	return s
 }
 
-// DropFront removes the newest live item without returning it. It is a
+// DropNewest removes the newest live item without returning it. It is a
 // no-op when the tail is empty.
 //
-// DropFront is identical to [Buf.PopFront] except that it does not return
+// DropNewest is identical to [Buf.PopNewest] except that it does not return
 // the removed item; prefer it when the caller doesn't need the value back.
-// Like PopFront, it does NOT advance [Buf.Offset]; the tail window simply
+// Like PopNewest, it does NOT advance [Buf.Offset]; the tail window simply
 // shrinks from its newest end.
 //
-// See also: [Buf.PopFront], [Buf.DropFrontN], [Buf.Front] for a
+// See also: [Buf.PopNewest], [Buf.DropNewestN], [Buf.Newest] for a
 // non-removing peek at the same item.
-func (b *Buf[T]) DropFront() {
+func (b *Buf[T]) DropNewest() {
 	if b.len == 0 {
 		return
 	}
@@ -777,27 +776,27 @@ func (b *Buf[T]) DropFront() {
 	b.window[idx] = zero
 	b.len--
 	if b.len == 0 {
-		// See PopFront for the rationale; same canonical-empty pin.
+		// See PopNewest for the rationale; same canonical-empty pin.
 		b.oldestIdx = 0
 	}
 }
 
-// DropFrontN removes up to n newest items without returning them. n <= 0
+// DropNewestN removes up to n newest items without returning them. n <= 0
 // is a no-op; n >= [Buf.Len] empties the tail.
 //
-// DropFrontN is identical to [Buf.PopFrontN] except that it does not
+// DropNewestN is identical to [Buf.PopNewestN] except that it does not
 // allocate or return the removed items; prefer it when the caller doesn't
-// need the values back. Like PopFrontN, it does NOT advance [Buf.Offset].
+// need the values back. Like PopNewestN, it does NOT advance [Buf.Offset].
 //
-// See also: [Buf.PopFrontN], [Buf.DropFront].
-func (b *Buf[T]) DropFrontN(n int) {
+// See also: [Buf.PopNewestN], [Buf.DropNewest].
+func (b *Buf[T]) DropNewestN(n int) {
 	if b.len == 0 || n < 1 {
 		return
 	}
 	if n >= b.len {
 		b.zeroTail()
-		// Same caveat as PopFrontN: do NOT bump b.offset (PopFront
-		// semantics shrink from the front), and don't call Clear which
+		// Same caveat as PopNewestN: do NOT bump b.offset (PopNewest
+		// semantics shrink from the newest end), and don't call Clear which
 		// would. Pin oldestIdx to 0 explicitly to match the canonical-
 		// empty invariant.
 		b.oldestIdx = 0
@@ -817,15 +816,15 @@ func (b *Buf[T]) DropFrontN(n int) {
 	b.len -= n
 }
 
-// DropBack removes the oldest live item, advancing [Buf.Offset] by one. It
+// DropOldest removes the oldest live item, advancing [Buf.Offset] by one. It
 // is a no-op when the tail is empty.
 //
-// DropBack is identical to [Buf.PopBack] except that it does not allocate
+// DropOldest is identical to [Buf.PopOldest] except that it does not allocate
 // or return the removed item; prefer it when the caller doesn't need the
 // value back.
 //
-// See also: [Buf.PopBack], [Buf.DropBackN].
-func (b *Buf[T]) DropBack() {
+// See also: [Buf.PopOldest], [Buf.DropOldestN].
+func (b *Buf[T]) DropOldest() {
 	if b.len == 0 {
 		return
 	}
@@ -835,21 +834,21 @@ func (b *Buf[T]) DropBack() {
 	b.len--
 	b.offset++
 	if b.len == 0 {
-		// See PopFront for the rationale; same canonical-empty pin.
+		// See PopNewest for the rationale; same canonical-empty pin.
 		b.oldestIdx = 0
 	}
 }
 
-// DropBackN removes up to n oldest items, advancing [Buf.Offset] by the
+// DropOldestN removes up to n oldest items, advancing [Buf.Offset] by the
 // number actually removed. n <= 0 is a no-op; n >= [Buf.Len] empties the
 // tail.
 //
-// DropBackN is identical to [Buf.PopBackN] except that it does not allocate
+// DropOldestN is identical to [Buf.PopOldestN] except that it does not allocate
 // or return the removed items; prefer it when the caller doesn't need the
 // values back.
 //
-// See also: [Buf.PopBackN], [Buf.DropBack].
-func (b *Buf[T]) DropBackN(n int) {
+// See also: [Buf.PopOldestN], [Buf.DropOldest].
+func (b *Buf[T]) DropOldestN(n int) {
 	if b.len == 0 || n < 1 {
 		return
 	}
@@ -1000,7 +999,7 @@ func (b *Buf[T]) Do(ctx context.Context, fn func(ctx context.Context, item T, in
 //
 // Panics if end < start. Negative start values do NOT panic: a nominal
 // index below [Buf.Offset] denotes an item that has already been evicted
-// from the back, and negative is just the extreme case of that — clipped
+// from the oldest end, and negative is just the extreme case of that — clipped
 // to the start of the live range like any other below-Offset index. This
 // is the deliberate asymmetry between SliceNominal (nominal coordinates,
 // where "below Offset" is meaningful) and [SliceTail] (tail-relative
@@ -1049,7 +1048,7 @@ func SliceNominal[T any](b *Buf[T], start, end int) []T {
 
 // SliceTail returns a freshly-allocated slice of the items at tail-relative
 // half-open positions [start, end). start counts from the oldest live item
-// (so position 0 is [Buf.Back] and position [Buf.Len]-1 is [Buf.Front]).
+// (so position 0 is [Buf.Oldest] and position [Buf.Len]-1 is [Buf.Newest]).
 // Positions past the live tail are clipped silently. The returned slice
 // never shares storage with the buffer.
 //
