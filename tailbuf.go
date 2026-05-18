@@ -23,9 +23,10 @@
 // half-open nominal range [Offset, Offset+Len) currently held; [Buf.InBounds]
 // reports whether a given nominal index is one of the live items.
 //
-// [Buf.Written] tracks the total count of writes ever made; it is independent
-// of [Buf.Offset] and is not changed by any of the Pop or Drop variants. The
-// relationship between the counters is:
+// [Buf.Written] tracks the total count of writes since construction or the
+// most recent [Buf.Reset]. It is independent of [Buf.Offset] and is not
+// changed by any of the Pop or Drop variants; only [Buf.Reset] zeros it.
+// The relationship between the counters is:
 //
 //	Bounds()       == (Offset(), Offset()+Len())
 //	Cap()          == fixed at construction
@@ -46,12 +47,16 @@
 // remove the newest live item(s). They do NOT advance [Buf.Offset]; the
 // tail window simply shrinks from its newest end.
 //
-// One subtle consequence: after any of those calls, the next [Buf.Write]
-// occupies the nominal index that the popped/dropped item had. The buffer
-// does not preserve "holes" in nominal-index space; the live items always
-// occupy a contiguous nominal range. Mixing the newest-end remove variants
-// with writes is supported, but if your code relies on a one-to-one
-// mapping between writes and nominal indices, do not call any of them.
+// One subtle consequence: the buffer does not preserve "holes" in
+// nominal-index space; the live items always occupy a contiguous nominal
+// range. So after [Buf.PopNewest] / [Buf.DropNewest], the next [Buf.Write]
+// reuses the nominal index of the popped item. After [Buf.PopNewestN](n) /
+// [Buf.DropNewestN](n), the next [Buf.Write] reuses the nominal index of
+// the OLDEST of the n popped items (i.e. [Buf.Offset] + [Buf.Len] after
+// the call); the n-1 writes after that refill the remaining slots in
+// oldest-to-newest order. Mixing the newest-end remove variants with
+// writes is supported, but if your code relies on a one-to-one mapping
+// between writes and nominal indices, do not call any of them.
 //
 // # Slice aliasing
 //
@@ -370,9 +375,10 @@ func (b *Buf[T]) Len() int {
 	return b.len
 }
 
-// Written returns the total number of items passed to [Buf.Write] or
-// [Buf.WriteAll]. It includes items that were evicted, popped, dropped, or
-// silently discarded by a zero-capacity buffer.
+// Written returns the number of items passed to [Buf.Write] or [Buf.WriteAll]
+// since construction or the most recent [Buf.Reset]. It includes items that
+// were evicted, popped, dropped, or silently discarded by a zero-capacity
+// buffer.
 //
 // Written is independent of [Buf.Offset] and [Buf.Len]: after any newest-end
 // remove ([Buf.PopNewest], [Buf.PopNewestN], [Buf.DropNewest], [Buf.DropNewestN]),
@@ -396,7 +402,7 @@ func (b *Buf[T]) Written() int {
 // [Buf.DropOldest] / [Buf.PopOldestN] / [Buf.DropOldestN], or [Buf.Clear].
 //
 // Equivalently, Offset is the number of items that have left the oldest end
-// the tail by any of those routes. [Buf.PopNewest], [Buf.PopNewestN],
+// of the tail by any of those routes. [Buf.PopNewest], [Buf.PopNewestN],
 // [Buf.DropNewest], and [Buf.DropNewestN] do NOT advance Offset.
 func (b *Buf[T]) Offset() int {
 	return b.offset

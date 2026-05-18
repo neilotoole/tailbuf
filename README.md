@@ -149,19 +149,21 @@ deliberate asymmetry around negative start values between the two helpers.
 
 Two families remove items from the buffer:
 
-| Method                       | Returns                | Advances `Offset`? |
-|------------------------------|------------------------|--------------------|
-| `PopOldest()`                | the removed item       | yes (by 1)         |
-| `PopOldestN(n)`              | the n removed items    | yes (by n)         |
-| `DropOldest()`               | nothing                | yes (by 1)         |
-| `DropOldestN(n)`             | nothing                | yes (by n)         |
-| `PopNewest()`                | the removed item       | no                 |
-| `PopNewestN(n)`              | the n removed items    | no                 |
-| `DropNewest()`               | nothing                | no                 |
-| `DropNewestN(n)`             | nothing                | no                 |
+| Method                       | Returns                    | Advances `Offset`? |
+|------------------------------|----------------------------|--------------------|
+| `PopOldest()`                | the removed item           | yes (by 1)         |
+| `PopOldestN(n)`              | up to n items (oldest end) | yes (by # removed) |
+| `DropOldest()`               | nothing                    | yes (by 1)         |
+| `DropOldestN(n)`             | nothing                    | yes (by # removed) |
+| `PopNewest()`                | the removed item           | no                 |
+| `PopNewestN(n)`              | up to n items (newest end) | no                 |
+| `DropNewest()`               | nothing                    | no                 |
+| `DropNewestN(n)`             | nothing                    | no                 |
 
-The `Drop*` variants skip the value copy (singular) or the slice allocation
-(plural), so prefer them when the caller doesn't need the removed values.
+For the `N`-suffixed variants, `n <= 0` is a no-op and `n` larger than
+`Len()` is silently capped — never panics. The `Drop*` variants skip the
+value copy (singular) or the slice allocation (plural), so prefer them when
+the caller doesn't need the removed values.
 
 ```go
 buf := tailbuf.New[string](3).WriteAll("a", "b", "c")
@@ -242,7 +244,8 @@ Invariants worth remembering:
 - `Bounds() == (Offset(), Offset()+Len())`
 - `Len() <= Cap()`
 - `Offset() + Len() <= Written()`, with equality unless `PopNewest` or
-  `DropNewest` (or their N variants) has removed an item.
+  `DropNewest` (or their N variants) has removed an item since construction
+  or the most recent `Reset`.
 
 ## Resetting
 
