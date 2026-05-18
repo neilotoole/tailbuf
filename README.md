@@ -227,7 +227,7 @@ buf.WriteAll("a", "b", "c", "d", "e")  // "a" and "b" have been evicted
 
 fmt.Println(buf.Cap())        // 3  (fixed at construction)
 fmt.Println(buf.Len())        // 3  (current live count, <= Cap)
-fmt.Println(buf.Written())    // 5  (total writes ever; never decreases)
+fmt.Println(buf.Written())    // 5  (total writes ever; only Reset zeros it)
 fmt.Println(buf.Offset())     // 2  (count of items removed from the oldest end)
 
 start, end := buf.Bounds()    // half-open nominal range of live items
